@@ -109,6 +109,10 @@ def case_like(source: str, target: str) -> str:
         return target.upper()
     if all(c.islower() for c in letters):
         return target.lower()
+    if len(source) == len(target):  # JaneD → AlexS: copy the case letter by letter
+        return "".join(
+            t.upper() if s.isupper() else t.lower() for s, t in zip(source, target, strict=True)
+        )
     if _is_capitalised_words(source):
         return capitalise_words(target)
     return target  # mixed case we can't map: the declared spelling is the safest choice
