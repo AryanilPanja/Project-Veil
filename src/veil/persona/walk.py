@@ -66,6 +66,16 @@ class PairRecord:
     contexts: tuple[str, ...] = ()
     enabled: bool = True
     meta: tuple[tuple[str, str], ...] = field(default=())
+    # Grouped records: forms [0, head_forms) come from the head pair at `path`, the rest from the
+    # index-aligned list at `list_path` (e.g. education[0].aliases).
+    list_path: str = ""
+    head_forms: int = 1
+
+    def form_path(self, index: int) -> str:
+        """Field path of one form, for findings (e.g. education[0].aliases[1])."""
+        if not self.list_path or index < self.head_forms:
+            return self.path
+        return item(self.list_path, index - self.head_forms)
 
     def __repr__(self) -> str:  # never show values
         return f"PairRecord(path={self.path!r}, kind={self.kind.value}, forms={len(self.reals)})"
@@ -120,7 +130,12 @@ def _person(persona: Persona) -> Iterator[PairRecord]:
     yield _pair(p.pronouns, child(base, "pronouns"), EntityKind.TOKEN, "pronouns")
     yield _pair(p.date_of_birth, child(base, "date_of_birth"), EntityKind.DATE, "date_of_birth")
     yield _grouped(
-        p.hometown, p.hometown_aliases, child(base, "hometown"), EntityKind.PLACE, "hometown"
+        p.hometown,
+        p.hometown_aliases,
+        child(base, "hometown"),
+        child(base, "hometown_aliases"),
+        EntityKind.PLACE,
+        "hometown",
     )
     yield _pair(p.home_state, child(base, "home_state"), EntityKind.PLACE, "home_state")
     yield _pair(p.current_city, child(base, "current_city"), EntityKind.PLACE, "current_city")
@@ -150,9 +165,21 @@ def _handles(persona: Persona) -> Iterator[PairRecord]:
 
 def _education(edu: Education, base: str) -> Iterator[PairRecord]:
     yield _grouped(
-        edu.institution, edu.aliases, child(base, "institution"), EntityKind.ORG, "institution"
+        edu.institution,
+        edu.aliases,
+        child(base, "institution"),
+        child(base, "aliases"),
+        EntityKind.ORG,
+        "institution",
     )
-    yield _grouped(edu.domain, edu.sub_domains, child(base, "domain"), EntityKind.DOMAIN, "domain")
+    yield _grouped(
+        edu.domain,
+        edu.sub_domains,
+        child(base, "domain"),
+        child(base, "sub_domains"),
+        EntityKind.DOMAIN,
+        "domain",
+    )
     yield _pair(edu.department, child(base, "department"), EntityKind.ORG, "department")
     yield _lab(edu.lab, child(base, "lab"))
     degree = _degree(edu.degree, child(base, "degree"))
@@ -268,13 +295,15 @@ def _many_pairs(
         yield _pair(pair, item(base, i), kind, role)
 
 
-def _grouped(head: Pair, extra: ListPair, path: str, kind: EntityKind, role: str) -> PairRecord:
+def _grouped(
+    head: Pair, extra: ListPair, path: str, list_path: str, kind: EntityKind, role: str
+) -> PairRecord:
     record = _pair(head, path, kind, role)
-    return _with_forms(record, (head.real, *extra.real), (head.fake, *extra.fake))
+    return _with_forms(record, (head.real, *extra.real), (head.fake, *extra.fake), list_path)
 
 
 def _lab(lab: LabPair, path: str) -> PairRecord:
-    return _grouped(lab, lab.aliases, path, EntityKind.ORG, "lab")
+    return _grouped(lab, lab.aliases, path, child(path, "aliases"), EntityKind.ORG, "lab")
 
 
 def _advisor(advisor: Advisor, path: str) -> PairRecord:
@@ -284,6 +313,7 @@ def _advisor(advisor: Advisor, path: str) -> PairRecord:
         role="advisor",
         reals=(advisor.real, *advisor.forms.real),
         fakes=(advisor.fake, *advisor.forms.fake),
+        list_path=child(path, "forms"),
     )
 
 
@@ -297,6 +327,8 @@ def _degree(degree: ClassTerm, path: str) -> PairRecord | None:
         reals=degree.phrases.real,
         fakes=degree.phrases.fake,
         enabled=degree.enabled,
+        list_path=child(path, "phrases"),
+        head_forms=0,
     )
 
 
@@ -327,7 +359,9 @@ def _pet(pet: Pet, base: str) -> Iterator[PairRecord]:
     yield _pair(pet.breed, child(base, "breed"), EntityKind.TOKEN, "pet_breed", policy=other_policy)
 
 
-def _with_forms(record: PairRecord, reals: tuple[str, ...], fakes: tuple[str, ...]) -> PairRecord:
+def _with_forms(
+    record: PairRecord, reals: tuple[str, ...], fakes: tuple[str, ...], list_path: str
+) -> PairRecord:
     return PairRecord(
         path=record.path,
         kind=record.kind,
@@ -339,4 +373,5 @@ def _with_forms(record: PairRecord, reals: tuple[str, ...], fakes: tuple[str, ..
         contexts=record.contexts,
         enabled=record.enabled,
         meta=record.meta,
+        list_path=list_path,
     )
