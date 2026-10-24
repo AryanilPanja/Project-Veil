@@ -54,12 +54,15 @@ def mode(path):
 class TestCreateKeyring:
     def test_stores_secret_under_pinned_names_and_writes_recipient(self, config, ring):
         identity = make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
-        assert ring.items == {(SERVICE, USERNAME): identity.secret}
+        assert ring.items == {(SERVICE, keystore.keyring_username(config)): identity.secret}
         assert (config / RECIPIENT_FILE).read_text() == identity.recipient + "\n"
         assert not (config / KEY_FILE).exists()
 
     def test_names_are_the_adr_0025_ones(self):
         assert (SERVICE, USERNAME) == ("project-veil", "age-identity-v1")
+
+    def test_test_dirs_never_use_the_real_entry(self, config):
+        assert keystore.keyring_username(config) != USERNAME
 
     def test_creates_private_config_dir_and_files(self, config, ring):
         make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
@@ -156,12 +159,12 @@ class TestNeverRegenerate:
         assert make(config, ring).load(lambda: PASS) == first
 
     def test_refuses_when_only_keyring_entry_exists(self, config, ring):
-        ring.items[(SERVICE, USERNAME)] = age.generate_identity().secret
+        ring.items[(SERVICE, keystore.keyring_username(config))] = age.generate_identity().secret
         with pytest.raises(VeilError, match="already exists in the keyring"):
             make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
 
     def test_file_mode_refuses_when_keyring_entry_exists(self, config, ring):
-        ring.items[(SERVICE, USERNAME)] = age.generate_identity().secret
+        ring.items[(SERVICE, keystore.keyring_username(config))] = age.generate_identity().secret
         with pytest.raises(VeilError, match="already exists in the keyring"):
             make(config, ring).create(KeyBackend.FILE, store_exists=False, passphrase=PASS)
         assert not (config / KEY_FILE).exists()
@@ -180,7 +183,7 @@ class TestNeverRegenerate:
 
     def test_refusal_message_is_value_free(self, config, ring):
         secret = age.generate_identity().secret
-        ring.items[(SERVICE, USERNAME)] = secret
+        ring.items[(SERVICE, keystore.keyring_username(config))] = secret
         with pytest.raises(VeilError) as info:
             make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
         assert secret not in str(info.value)
@@ -274,7 +277,7 @@ class TestLoad:
     def test_keyring_entry_replaced_by_other_key_is_detected(self, config, ring):
         make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
         impostor = age.generate_identity()
-        ring.items[(SERVICE, USERNAME)] = impostor.secret
+        ring.items[(SERVICE, keystore.keyring_username(config))] = impostor.secret
         with pytest.raises(KeyUnavailable, match=r"does not match recipient\.txt") as info:
             make(config, ring).load()
         assert impostor.secret not in str(info.value)
@@ -311,7 +314,7 @@ class TestLoad:
 
     def test_corrupt_keyring_entry(self, config, ring):
         make(config, ring).create(KeyBackend.KEYRING, store_exists=False)
-        ring.items[(SERVICE, USERNAME)] = "not-a-key"
+        ring.items[(SERVICE, keystore.keyring_username(config))] = "not-a-key"
         with pytest.raises(KeyUnavailable, match="not a valid age identity") as info:
             make(config, ring).load()
         assert "not-a-key" not in str(info.value)
@@ -507,3 +510,50 @@ class TestStatusAndPinning:
     def test_tests_cannot_reach_the_real_keyring(self, config):
         with pytest.raises(KeyUnavailable, match="AssertionError"):
             KeyStore(config, timeout=2)._keyring_get()
+
+
+class TestKeyringUsername:
+    def test_default_config_dir_keeps_plain_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path))
+        assert keystore.keyring_username(tmp_path / ".config" / "veil") == USERNAME
+
+    def test_default_dir_via_symlinked_home(self, tmp_path, monkeypatch):
+        real = tmp_path / "real-home"
+        (real / ".config" / "veil").mkdir(parents=True)
+        link = tmp_path / "link-home"
+        link.symlink_to(real)
+        monkeypatch.setenv("HOME", str(link))
+        assert keystore.keyring_username(real / ".config" / "veil") == USERNAME
+
+    def test_other_dir_gets_stable_suffix(self, tmp_path):
+        a = keystore.keyring_username(tmp_path / "a")
+        assert a.startswith(USERNAME + "-")
+        assert len(a) == len(USERNAME) + 13
+        assert keystore.keyring_username(tmp_path / "a") == a
+        assert keystore.keyring_username(tmp_path / "x" / ".." / "a") == a
+
+    def test_different_dirs_differ(self, tmp_path):
+        names = {keystore.keyring_username(tmp_path / f"d{i}") for i in range(50)}
+        assert len(names) == 50
+
+    def test_unicode_dir(self, tmp_path):
+        assert keystore.keyring_username(tmp_path / "व्यक्ति").startswith(USERNAME + "-")
+
+    def test_suffix_reveals_nothing_about_the_path(self, tmp_path):
+        name = keystore.keyring_username(tmp_path / "jane-doe-config")
+        assert "jane" not in name
+
+    def test_two_stores_share_a_keyring_without_colliding(self, tmp_path, ring):
+        first = make(tmp_path / "one", ring).create(KeyBackend.KEYRING, store_exists=False)
+        second = make(tmp_path / "two", ring).create(KeyBackend.KEYRING, store_exists=False)
+        assert len(ring.items) == 2
+        assert make(tmp_path / "one", ring).load() == first
+        assert make(tmp_path / "two", ring).load() == second
+
+    def test_test_store_does_not_block_the_real_first_import(self, tmp_path, ring, monkeypatch):
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        make(tmp_path / "throwaway", ring).create(KeyBackend.KEYRING, store_exists=False)
+        real = make(tmp_path / "home" / ".config" / "veil", ring)
+        assert real.username == USERNAME
+        real.create(KeyBackend.KEYRING, store_exists=False)
+        assert (SERVICE, USERNAME) in ring.items

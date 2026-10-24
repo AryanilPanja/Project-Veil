@@ -13,8 +13,8 @@ from tests.conftest import run_python
 from tests.unit.test_check_cli import FIXTURE
 from veil import cli, paths, ui
 from veil.crypto import age
-from veil.crypto.keystore import KEY_FILE, RECIPIENT_FILE, SERVICE, USERNAME
-from veil.errors import StorageError
+from veil.crypto.keystore import KEY_FILE, RECIPIENT_FILE, SERVICE, keyring_username
+from veil.errors import StorageError, UnsafeEnvironment, VeilError
 from veil.exitcodes import ExitCode
 from veil.persona import canary
 from veil.persona.schema import parse_persona
@@ -94,7 +94,7 @@ class TestImportKeyring:
         assert (config / STORE_FILE).exists()
         assert (config / RECIPIENT_FILE).exists()
         assert not (config / KEY_FILE).exists()
-        assert (SERVICE, USERNAME) in veil_home.ring.items
+        assert (SERVICE, keyring_username(veil_home.config)) in veil_home.ring.items
         out, err = capsys.readouterr()
         assert "persona imported and encrypted" in out
         assert "new key stored (keyring)" in out
@@ -103,7 +103,9 @@ class TestImportKeyring:
 
     def test_store_decrypts_to_source_plus_canary(self, veil_home, source):
         veil("persona", "import", str(source))
-        identity = age.parse_identity(veil_home.ring.items[(SERVICE, USERNAME)])
+        identity = age.parse_identity(
+            veil_home.ring.items[(SERVICE, keyring_username(veil_home.config))]
+        )
         data = age.decrypt((veil_home.config / STORE_FILE).read_bytes(), identity).decode()
         tokens = canary.find_all(data)
         assert len(tokens) == 2
@@ -280,7 +282,9 @@ class TestReplace:
             ("persona", "import", "--replace", str(source)),
         ):
             veil(*args)
-            identity = identity or age.parse_identity(veil_home.ring.items[(SERVICE, USERNAME)])
+            identity = identity or age.parse_identity(
+                veil_home.ring.items[(SERVICE, keyring_username(veil_home.config))]
+            )
             data = age.decrypt((veil_home.config / STORE_FILE).read_bytes(), identity).decode()
             seen.add(canary.find_all(data)[0])
         assert len(seen) == 2
@@ -290,7 +294,7 @@ class TestReplace:
         before = (veil_home.config / STORE_FILE).read_bytes()
         # Someone swapped both the keyring entry and recipient.txt for a new key.
         other = age.generate_identity()
-        veil_home.ring.items[(SERVICE, USERNAME)] = other.secret
+        veil_home.ring.items[(SERVICE, keyring_username(veil_home.config))] = other.secret
         (veil_home.config / RECIPIENT_FILE).write_text(other.recipient + "\n")
         assert veil("persona", "import", "--replace", str(source)) == ExitCode.DECRYPT_FAILED
         assert (veil_home.config / STORE_FILE).read_bytes() == before
@@ -314,49 +318,79 @@ class TestReplace:
 # ── passphrase mode ───────────────────────────────────────────────────────────
 
 
+def import_file_mode(home, source, *, replace=False):
+    """Passphrase mode is not offered by the v0.1 CLI (board Q4), but the code path stays tested."""
+    from veil.crypto.keystore import KeyBackend, KeyStore
+    from veil.persona.importer import Prompts, import_persona
+    from veil.persona.store import PersonaStore
+
+    return import_persona(
+        source,
+        keystore=KeyStore(home.config, timeout=2),
+        store=PersonaStore(home.config),
+        prompts=Prompts(
+            passphrase=lambda: ui.prompt_secret("Passphrase"),
+            new_passphrase=lambda: ui.new_secret("New passphrase"),
+            confirm_shred=lambda: False,
+        ),
+        replace=replace,
+        backend=KeyBackend.FILE,
+    )
+
+
 class TestImportPassphrase:
-    def test_first_import_in_file_mode(self, veil_home, source, tty, answers, capsys):
+    def test_cli_does_not_offer_passphrase_mode_in_v01(self, veil_home, source, capsys):
+        with pytest.raises(SystemExit) as info:
+            cli.main(["persona", "import", "--key-backend", "file", str(source)])
+        assert info.value.code == ExitCode.USAGE
+        assert "invalid choice" in capsys.readouterr().err
+        assert not (veil_home.config / STORE_FILE).exists()
+
+    def test_first_import_in_file_mode(self, veil_home, source, tty, answers):
         answers["secrets"] = [PASS, PASS]
-        assert veil("persona", "import", "--key-backend", "file", str(source)) == ExitCode.OK
+        result = import_file_mode(veil_home, source)
+        assert result.created_key is not None
+        assert result.created_key.value == "file"
         assert (veil_home.config / KEY_FILE).exists()
         assert veil_home.ring.items == {}
-        assert "new key stored (file)" in capsys.readouterr().out
         answers["secrets"] = [PASS]
-        assert veil("persona", "check") == ExitCode.OK
+        assert veil("persona", "check") == ExitCode.OK  # an existing key.age still loads
 
-    def test_mismatched_new_passphrases(self, veil_home, source, tty, answers, capsys):
+    def test_mismatched_new_passphrases(self, veil_home, source, tty, answers):
         answers["secrets"] = [PASS, PASS + "!"]
-        assert veil("persona", "import", "--key-backend", "file", str(source)) == ExitCode.USAGE
-        assert "did not match" in capsys.readouterr().err
+        with pytest.raises(VeilError, match="did not match") as info:
+            import_file_mode(veil_home, source)
+        assert info.value.exit_code == ExitCode.USAGE
         assert not (veil_home.config / KEY_FILE).exists()
         assert not (veil_home.config / STORE_FILE).exists()
 
     def test_weak_passphrase(self, veil_home, source, tty, answers):
         answers["secrets"] = ["short", "short"]
-        assert veil("persona", "import", "--key-backend", "file", str(source)) == ExitCode.USAGE
+        with pytest.raises(VeilError) as info:
+            import_file_mode(veil_home, source)
+        assert info.value.exit_code == ExitCode.USAGE
         assert not (veil_home.config / STORE_FILE).exists()
 
     def test_wrong_passphrase_on_replace(self, veil_home, source, tty, answers, capsys):
         answers["secrets"] = [PASS, PASS]
-        veil("persona", "import", "--key-backend", "file", str(source))
+        import_file_mode(veil_home, source)
         before = (veil_home.config / STORE_FILE).read_bytes()
         answers["secrets"] = ["wrong horse battery"]
         assert veil("persona", "import", "--replace", str(source)) == ExitCode.DECRYPT_FAILED
         assert "horse" not in capsys.readouterr().err
         assert (veil_home.config / STORE_FILE).read_bytes() == before
 
-    def test_passphrase_prompt_needs_a_terminal(self, veil_home, source, answers, capsys):
+    def test_passphrase_prompt_needs_a_terminal(self, veil_home, source, answers):
         answers["secrets"] = [PASS, PASS]
-        assert veil("persona", "import", "--key-backend", "file", str(source)) == (
-            ExitCode.UNSAFE_ENVIRONMENT
-        )
+        with pytest.raises(UnsafeEnvironment):
+            import_file_mode(veil_home, source)
         assert not (veil_home.config / STORE_FILE).exists()
 
-    def test_switching_modes_is_refused(self, veil_home, source, capsys):
+    def test_switching_modes_is_refused(self, veil_home, source, tty, answers):
         veil("persona", "import", str(source))
-        code = veil("persona", "import", "--replace", "--key-backend", "file", str(source))
-        assert code == ExitCode.USAGE
-        assert "switching modes" in capsys.readouterr().err
+        with pytest.raises(VeilError, match="switching modes") as info:
+            import_file_mode(veil_home, source, replace=True)
+        assert info.value.exit_code == ExitCode.USAGE
 
     def test_explicit_keyring_backend_matches(self, veil_home, source):
         veil("persona", "import", "--key-backend", "keyring", str(source))
@@ -470,7 +504,7 @@ class TestStatus:
         self, veil_home, source, tty, answers, safe_host, capsys
     ):
         answers["secrets"] = [PASS, PASS]
-        veil("persona", "import", "--key-backend", "file", str(source))
+        import_file_mode(veil_home, source)
         capsys.readouterr()
         answers["asked"].clear()
         assert veil("persona", "status") == ExitCode.OK

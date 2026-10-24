@@ -15,6 +15,8 @@ Rules:
 """
 
 import contextlib
+import hashlib
+import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -28,7 +30,7 @@ from veil.errors import KeyUnavailable, VeilError
 from veil.exitcodes import ExitCode
 
 SERVICE = "project-veil"
-USERNAME = "age-identity-v1"
+USERNAME = "age-identity-v1"  # for the default config dir; others get a suffix (keyring_username)
 RECIPIENT_FILE = "recipient.txt"
 KEY_FILE = "key.age"
 DEFAULT_TIMEOUT = 20.0
@@ -57,6 +59,20 @@ def secret_service_backend() -> SecretBackend:
     return Keyring()
 
 
+def keyring_username(directory: Path) -> str:
+    """The keyring entry for the key of the store in `directory` (ADR-0025 amendment, Q10).
+
+    The default config dir (~/.config/veil) keeps the plain name. Any other dir (a test store,
+    a second persona) gets a suffix derived from its absolute path, so it can never collide
+    with, overwrite or block the real key.
+    """
+    resolved = directory.expanduser().resolve()
+    if resolved == (Path.home() / ".config" / "veil").resolve():
+        return USERNAME
+    digest = hashlib.sha256(os.fsencode(resolved)).hexdigest()[:12]
+    return f"{USERNAME}-{digest}"
+
+
 @dataclass(frozen=True)
 class KeyStatus:
     """Value-free description of the key setup, for `veil persona status`."""
@@ -78,6 +94,10 @@ class KeyStore:
         self._secrets_factory = secrets
         self._secrets: SecretBackend | None = None
         self.timeout = timeout
+
+    @property
+    def username(self) -> str:
+        return keyring_username(self.directory)
 
     @property
     def recipient_path(self) -> Path:
@@ -154,7 +174,7 @@ class KeyStore:
         try:
             # A timed-out set may still land later; the next `create` then refuses
             # ("already exists in the keyring"), which is the safe direction.
-            self._keyring_call(lambda s: s.set_password(SERVICE, USERNAME, identity.secret))
+            self._keyring_call(lambda s: s.set_password(SERVICE, self.username, identity.secret))
             stored = self._keyring_get()
         except BaseException:
             self._rollback(KeyBackend.KEYRING)
@@ -180,7 +200,7 @@ class KeyStore:
         # Best effort: the original error is the one worth reporting.
         with contextlib.suppress(Exception):
             if backend is KeyBackend.KEYRING:
-                self._keyring_call(lambda s: s.delete_password(SERVICE, USERNAME))
+                self._keyring_call(lambda s: s.delete_password(SERVICE, self.username))
             else:
                 fsutil.secure_remove(self.key_path, "the key file")
 
@@ -226,7 +246,7 @@ class KeyStore:
             return False  # passphrase mode must work without a keyring (e.g. over ssh)
 
     def _keyring_get(self) -> str | None:
-        return self._keyring_call(lambda s: s.get_password(SERVICE, USERNAME))
+        return self._keyring_call(lambda s: s.get_password(SERVICE, self.username))
 
     def _keyring_call[T](self, fn: Callable[[SecretBackend], T]) -> T:
         """Run one keyring call in a daemon thread; give up after `self.timeout` seconds."""
