@@ -21,7 +21,7 @@ jobs:
     steps:
       # Node 24 majors (Node 20 actions are deprecated). TODO-later: pin to full commit SHAs
       # (e.g. with `pinact`); Dependabot keeps them current either way.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
