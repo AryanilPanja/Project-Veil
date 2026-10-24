@@ -7,7 +7,8 @@ consistent fake persona** before text leaves your machine, and translating the a
 email, home path and roll number all become matching fakes. The AI still gives useful answers
 about "Alex"; you get them back with your real details restored.
 
-> **Status: early development (v0.1.0 in progress).** Not ready for use yet.
+> **Status: early development (v0.1.0 in progress).** The encrypted persona (milestone M0) works;
+> translation itself (M1) and the clipboard hotkeys (M2) are next. Not ready for everyday use yet.
 
 ## Planned releases
 | Release | What |
