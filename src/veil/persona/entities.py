@@ -79,6 +79,28 @@ class Settings:
 
 
 @dataclass(frozen=True, slots=True)
+class AcademicProfile:
+    """One education entry's class terms, for phrase templates and context guards (M1.5).
+
+    Holds real values: repr shows the path only.
+    """
+
+    path: str  # education[i]
+    degree_enabled: bool
+    degree_real: str
+    degree_fake: str
+    year_enabled: bool
+    year_real: str
+    year_fake: str
+    year_context_required: bool
+    context_real: tuple[str, ...]  # institution + aliases + declared degree phrases
+    context_fake: tuple[str, ...]
+
+    def __repr__(self) -> str:
+        return f"AcademicProfile(path={self.path!r})"
+
+
+@dataclass(frozen=True, slots=True)
 class FlatPersona:
     entities: tuple[Entity, ...]
     sensitive: tuple[SensitiveTerm, ...]
@@ -87,6 +109,7 @@ class FlatPersona:
     never_reverse: frozenset[str]
     settings: Settings
     canary: str
+    academic: tuple[AcademicProfile, ...] = ()
 
     def __repr__(self) -> str:
         return (
@@ -124,7 +147,37 @@ def flatten(persona: Persona) -> FlatPersona:
             sensitive_default=persona.sensitive.default_policy,
         ),
         canary=persona.veil_canary,
+        academic=_academic(persona),
     )
+
+
+def _academic(persona: Persona) -> tuple[AcademicProfile, ...]:
+    profiles: list[AcademicProfile] = []
+    for i, edu in enumerate(persona.education):
+        degree, year = edu.degree, edu.year_of_study
+        if not (degree.enabled and degree.real.strip()) and not (
+            year.enabled and year.real is not None
+        ):
+            continue
+        # Only forms that are themselves translated: the bare degree term ("MS") is not, so it
+        # could satisfy a guard forward but not in reverse (the round trip would break).
+        context_real = [edu.institution.real, *edu.aliases.real, *degree.phrases.real]
+        context_fake = [edu.institution.fake, *edu.aliases.fake, *degree.phrases.fake]
+        profiles.append(
+            AcademicProfile(
+                path=f"education[{i}]",
+                degree_enabled=degree.enabled,
+                degree_real=degree.real,
+                degree_fake=degree.fake,
+                year_enabled=year.enabled,
+                year_real="" if year.real is None else str(year.real),
+                year_fake="" if year.fake is None else str(year.fake),
+                year_context_required=year.context_required,
+                context_real=tuple(c for c in context_real if c.strip()),
+                context_fake=tuple(c for c in context_fake if c.strip()),
+            )
+        )
+    return tuple(profiles)
 
 
 def _to_entity(record: PairRecord) -> Entity | None:
