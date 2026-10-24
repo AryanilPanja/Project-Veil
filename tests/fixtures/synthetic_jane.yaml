@@ -6,15 +6,15 @@ fidelity: semantic
 
 person:
   first_name:   { real: Jane, fake: Alex }
-  short_name:   { real: Janie, fake: Al }
-  last_name:    { real: Doe, fake: Smith }
+  short_name:   { real: Janie, fake: Al, allow_short: true }
+  last_name:    { real: Doe, fake: Smith, allow_short: true }
   full_name:    { real: Jane Doe, fake: Alex Smith }
   middle_name:  { real: "", fake: "" }
   nicknames:
     - { real: JD, fake: AS, allow_short: true }
   name_in_other_scripts:
-    - { real: জেন, fake: অ্যালেক্স }      # Bengali
-    - { real: जेन, fake: एलेक्स }         # Devanagari
+    - { real: জেন, fake: অ্যালেক্স, allow_short: true }      # Bengali
+    - { real: जेन, fake: एलेक्स, allow_short: true }         # Devanagari
     - { real: ஜேன், fake: அலெக்ஸ் }       # Tamil
   gender:        { real: f, fake: f }
   pronouns:      { real: she/her, fake: she/her }
@@ -54,7 +54,7 @@ education:
     domain:      { real: xyz.example.test, fake: abc.example.test }
     sub_domains: { real: [research.xyz.example.test], fake: [research.abc.example.test] }
     department:  { real: CSE, policy: KEEP }
-    lab:         { real: Vision Lab, fake: Signal Group, aliases: { real: [VL], fake: [SG] } }
+    lab:         { real: Vision Lab, fake: Signal Group, allow_short: true, aliases: { real: [VL], fake: [SG] } }
     degree:
       enabled: true
       real: MS
@@ -92,7 +92,7 @@ work:
 people:
   - { real: John Doe, fake: Sam Smith, relation: father }
   - { real: Joan Doe, fake: Kim Smith, relation: mother }
-  - { real: Roe, fake: Lane, relation: mother_maiden_name }
+  - { real: Roe, fake: Lane, relation: mother_maiden_name, allow_short: true }
   - { real: Ravi Kumar, fake: Om Prakash, relation: friend }
 
 infra:

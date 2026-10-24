@@ -44,7 +44,8 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "PT", "T20", "BLE", 
 # Tests: asserts, prints in subprocess snippets, synthetic "secrets" (S105) and running
 # sys.executable in subprocesses (S603) are intentional.
 # RUF001: tests use confusable Unicode (full-width, Greek, Indic digits) on purpose.
-"tests/**" = ["S101", "T20", "S105", "S603", "RUF001"]
+# E501: inline YAML test documents read better unsplit; source code keeps the 100 limit.
+"tests/**" = ["S101", "T20", "S105", "S603", "RUF001", "E501"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 "yaml.load".msg = "use veil.persona.yamlio.load_yaml"

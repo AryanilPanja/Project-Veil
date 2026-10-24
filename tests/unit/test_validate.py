@@ -27,7 +27,9 @@ def people(*pairs: tuple[str, str], extra: str = "") -> str:
 
 
 def findings_of(doc: str) -> list[tuple[str, str]]:
-    return [(f.code, f.path) for f in check(doc).findings]
+    """Errors only: these tests are about the bijection (E010-E016). Warnings and notes are
+    covered in test_rules.py."""
+    return [(f.code, f.path) for f in check(doc).errors]
 
 
 # ── Valid documents ───────────────────────────────────────────────────────────
@@ -35,7 +37,8 @@ def findings_of(doc: str) -> list[tuple[str, str]]:
 
 def test_synthetic_fixture_is_valid():
     report = validate(parse_persona(load_yaml(FIXTURE.read_bytes())))
-    assert report.findings == ()
+    assert report.errors == ()
+    assert report.warnings == ()  # notes (I001/I002) are expected
 
 
 def test_template_is_valid():
@@ -171,7 +174,7 @@ def test_e016_missing_fake_at_the_exact_form_path(doc, path):
     ],
 )
 def test_no_e016_for_generated_kept_or_disabled(doc):
-    assert check(doc).findings == ()
+    assert check(doc).errors == ()
 
 
 def test_generated_real_still_must_not_appear_in_a_fake():

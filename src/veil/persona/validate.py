@@ -1,4 +1,5 @@
-"""Semantic validation of a parsed persona (part 1: the bijection, ADR-0001 / ADR-0026).
+"""Semantic validation of a parsed persona. Part 1, the bijection (ADR-0001 / ADR-0026), is
+here; part 2 (cross-field errors E017-E020, warnings W101-W111, notes I001-I002) is in rules.py.
 
 Codes (all errors):
   E010  two different real values share one fake (reverse translation would be ambiguous)
@@ -47,11 +48,15 @@ class FormRow:
 
 
 def validate(persona: Persona) -> Report:
+    from veil.persona.rules import cross_field_findings  # rules.py imports helpers from here
+
     findings: list[Finding] = []
     rows: list[FormRow] = []
-    for record in iter_pair_records(persona):
+    records = list(iter_pair_records(persona))
+    for record in records:
         rows.extend(_rows_of(record, findings))
     findings.extend(validate_forms(rows))
+    findings.extend(cross_field_findings(persona, records))
     return make_report(findings)
 
 
@@ -99,12 +104,45 @@ def _rows_of(record: PairRecord, findings: list[Finding]) -> Iterable[FormRow]:
                 continue
             # The fake will be generated in M1; the real value must still never appear inside
             # anyone's fake, so it stays in as a real-only row.
+            findings.append(
+                Finding(Severity.INFO, "I001", path, f"the fake will be generated ({policy.value})")
+            )
+            findings.extend(_short_form(record, path, real, ""))
             rows.append(FormRow(path, real, "", reversible=True))
             continue
-        if canon(real) == canon(fake) or record.kind is EntityKind.YEAR:
+        if canon(real) == canon(fake):
+            findings.append(
+                Finding(Severity.INFO, "I002", path, "real and fake are the same; treated as KEEP")
+            )
             continue
+        if record.kind is EntityKind.YEAR:
+            continue
+        findings.extend(_short_form(record, path, real, fake))
         rows.append(FormRow(path, real, fake, reversible=policy is not Policy.GENERALIZE))
     return rows
+
+
+SHORT = 3
+
+
+def _short_form(record: PairRecord, path: str, real: str, fake: str) -> list[Finding]:
+    """W101: very short forms match inside ordinary text unless explicitly allowed or guarded."""
+    if record.allow_short or any(c.strip() for c in record.contexts):
+        return []
+    sides = [
+        side for side, value in (("real", real), ("fake", fake)) if 0 < len(canon(value)) <= SHORT
+    ]
+    if not sides:
+        return []
+    return [
+        Finding(
+            Severity.WARNING,
+            "W101",
+            path,
+            f"short {' and '.join(sides)} form (≤{SHORT} characters) can match ordinary text; "
+            "set `allow_short: true` or add `contexts`",
+        )
+    ]
 
 
 # ── Checks ────────────────────────────────────────────────────────────────────
