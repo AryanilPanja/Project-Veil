@@ -60,6 +60,8 @@ class TestCaseLike:
             ("জেন", "অ্যালেক্স", "অ্যালেক্স"),  # no case in Bengali
             ("JANE-04", "alex-07", "ALEX-07"),
             ("McDonald", "macleod", "Macleod"),
+            ("Jane\r\n\tDoe", "alex smith", "Alex Smith"),  # same length, letters misaligned
+            ("Ja-ne", "Alexs", "Alexs"),  # letters misaligned: no letter-by-letter copy
         ],
     )
     def test_patterns(self, source, target, expected):

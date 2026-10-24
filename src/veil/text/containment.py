@@ -30,6 +30,14 @@ class PreparedText:
         self.text = nfkc(raw)
         self.folded, self.origin = fold_with_map(self.text)
 
+    @classmethod
+    def from_normalized(cls, text: str) -> "PreparedText":
+        """Prepare text that is already normalized by the caller (offsets stay as given)."""
+        prepared = cls.__new__(cls)
+        prepared.text = text
+        prepared.folded, prepared.origin = fold_with_map(text)
+        return prepared
+
 
 def find_bounded(needle: str, haystack: str | PreparedText) -> list[Span]:
     """All bounded occurrences of `needle` in `haystack`, in order (they may overlap)."""

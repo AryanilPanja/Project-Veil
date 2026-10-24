@@ -109,7 +109,9 @@ def case_like(source: str, target: str) -> str:
         return target.upper()
     if all(c.islower() for c in letters):
         return target.lower()
-    if len(source) == len(target):  # JaneD → AlexS: copy the case letter by letter
+    if len(source) == len(target) and all(  # JaneD → AlexS: copy the case letter by letter
+        s.isalpha() == t.isalpha() for s, t in zip(source, target, strict=True)
+    ):
         return "".join(
             t.upper() if s.isupper() else t.lower() for s, t in zip(source, target, strict=True)
         )
