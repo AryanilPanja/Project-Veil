@@ -13,5 +13,6 @@ class ExitCode(IntEnum):
     BUSY = 6  # lock held by another process
     UNSAFE_ENVIRONMENT = 7  # no TTY for a human-only command, bad runtime dir, refused editor…
     ABORTED = 8  # the user cancelled
+    STORAGE = 9  # could not write safely: disk full, I/O error (the previous file is unchanged)
     INTERNAL = 70  # unexpected exception (class name only is shown)
     INTERRUPTED = 130  # SIGINT
