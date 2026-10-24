@@ -40,7 +40,7 @@ def find_bounded(needle: str, haystack: str | PreparedText) -> list[Span]:
     spans: list[Span] = []
     pos = hay.folded.find(target)
     while pos != -1:
-        span = _to_original(hay, pos, pos + len(target))
+        span = to_original(hay, pos, pos + len(target))
         if span is not None and is_bounded(hay.text, span.start, span.end):
             spans.append(span)
         pos = hay.folded.find(target, pos + 1)
@@ -51,7 +51,7 @@ def contains_bounded(needle: str, haystack: str | PreparedText) -> bool:
     return bool(find_bounded(needle, haystack))
 
 
-def _to_original(hay: PreparedText, fstart: int, fend: int) -> Span | None:
+def to_original(hay: PreparedText, fstart: int, fend: int) -> Span | None:
     """Map a folded match back to original characters; reject matches that split a character.
 
     A match must start at the first folded char of its source character and end at the last

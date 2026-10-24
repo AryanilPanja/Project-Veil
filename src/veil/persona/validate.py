@@ -27,7 +27,7 @@ from veil.persona.policy import Policy, effective_policy
 from veil.persona.report import Finding, Report, Severity, make_report
 from veil.persona.schema import Persona
 from veil.persona.walk import EntityKind, PairRecord, iter_pair_records
-from veil.text.containment import NaiveIndex
+from veil.text.aho import containment_pairs
 from veil.text.normalize import canon
 
 GENERATED = frozenset({Policy.FPE, Policy.SHIFT})
@@ -202,17 +202,17 @@ def _equal_across(all_rows: Sequence[FormRow], rows: Sequence[FormRow]) -> Itera
 def _containment(all_rows: Sequence[FormRow], rows: Sequence[FormRow]) -> Iterable[Finding]:
     reals = list(all_rows)
     fakes = list(rows)
-    real_index = NaiveIndex([r.real for r in reals])
-    fake_index = NaiveIndex([r.fake for r in fakes])
-    for row in fakes:
-        for i in real_index.containing(row.fake):
+    fakes_in_reals = containment_pairs([r.fake for r in fakes], [r.real for r in reals])
+    reals_in_fakes = containment_pairs([r.real for r in reals], [r.fake for r in fakes])
+    for f, row in enumerate(fakes):
+        for i in fakes_in_reals.get(f, ()):
             other = reals[i]
             if canon(other.real) != canon(row.fake):  # equality is E012
                 yield _error(
                     "E013", row.path, f"the fake occurs inside the real value at {other.path}"
                 )
-    for row in reals:
-        for i in fake_index.containing(row.real):
+    for r, row in enumerate(reals):
+        for i in reals_in_fakes.get(r, ()):
             other = fakes[i]
             if canon(other.fake) != canon(row.real):
                 yield _error(
