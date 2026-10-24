@@ -25,7 +25,36 @@ about "Alex"; you get them back with your real details restored.
   letters, and handles Indic scripts correctly (names inside longer words are not matched).
 - Failures are **fail-closed**: on any error veil blocks or clears rather than sending real data.
 
-## Honest limits
+## Platform support
+
+Veil is being built and tested on **one setup first: Linux, KDE Plasma 6 on Wayland** (Fedora).
+Other platforms are not refused on purpose; they simply have not been built for or tested yet.
+
+**Requirements (all platforms, today):**
+- Linux with systemd: veil keeps temporary plaintext only in your login session's in-memory
+  runtime directory (`/run/user/<uid>`, tmpfs) and refuses to run edits anywhere else.
+- A Secret Service keyring (KDE Wallet, GNOME Keyring or KeePassXC) to hold the encryption key,
+  **or** passphrase mode (no keyring needed; works over ssh, but cannot be used from hotkeys yet).
+- [uv](https://docs.astral.sh/uv/) (installs Python 3.13 for you).
+- For the v0.1 clipboard hotkeys: a Wayland session, `wl-clipboard` and `notify-send`.
+
+| Platform | Persona, encryption, CLI (`veil translate`) | Clipboard hotkeys (v0.1) | Claude Code proxy (v0.2) |
+|---|---|---|---|
+| **Linux, KDE Plasma 6, Wayland** | ✅ target, tested | ✅ target (shortcuts installed by `veil install-shortcuts`) | ✅ target |
+| Linux, GNOME, Wayland | 🟡 should work (GNOME Keyring is a Secret Service); untested | ❓ untested: GNOME may not let background tools read the clipboard; shortcuts must be added by hand | 🟡 should work; untested |
+| Linux, other Wayland desktops (Sway, Hyprland…) | 🟡 should work with a Secret Service keyring or passphrase mode | 🟡 likely (they support `wl-clipboard`); shortcuts by hand | 🟡 should work |
+| Linux, X11 session | 🟡 core should work | ❌ not supported (needs `xclip`/`xsel` support) | 🟡 should work |
+| Linux without systemd / no `/run/user` tmpfs | ❌ `persona edit` refuses (no safe place for plaintext) | ❌ | ❌ |
+| macOS | ❌ not supported yet (no tmpfs runtime dir, Keychain not wired up) | ❌ | ❌ |
+| Windows | ❌ not supported yet (uses Unix-only file locking and permissions) | ❌ | ❌ |
+| WSL | ❌ untested; no desktop keyring by default | ❌ | ❌ |
+
+✅ supported and tested · 🟡 expected to work, untested · ❓ unknown · ❌ not supported
+
+Porting to other platforms is planned for later. The design keeps the platform-specific parts
+(file safety, keyring, clipboard, hotkeys) in small modules so they can be swapped.
+
+## Limits
 Veil **reduces** what you reveal; it does **not** make you anonymous. Your AI account already
 identifies you to the provider, unique content (your actual code or research) can identify you,
 and images/PDFs are passed through unchanged for now.
