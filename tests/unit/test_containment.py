@@ -115,7 +115,15 @@ def _oracle_side(edge: str, neighbour: str | None, left: bool) -> bool:
         return True
     if _oracle_class(edge) == "N":
         return False
-    if unicodedata.name(neighbour, "?").split()[0] != unicodedata.name(edge, "?").split()[0]:
+
+    def base_letter(ch: str) -> bool:
+        cat = unicodedata.category(ch)
+        return cat[0] != "M" and cat != "Lm"
+
+    same_script = (
+        unicodedata.name(neighbour, "?").split()[0] == unicodedata.name(edge, "?").split()[0]
+    )
+    if base_letter(neighbour) and base_letter(edge) and not same_script:
         return True
     lo, up = (neighbour, edge) if left else (edge, neighbour)
     return lo.islower() and up.isupper()

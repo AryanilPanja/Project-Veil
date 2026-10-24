@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from veil.text.normalize import DROPPED, canon, fold_with_map, nfkc
+from veil.text.normalize import canon, fold_with_map, is_dropped, nfkc
 
 
 @pytest.mark.parametrize(
@@ -48,9 +48,37 @@ def test_nukta_precomposed_and_decomposed_are_equal():
     assert canon(precomposed) == canon(decomposed)
 
 
-def test_dropped_set_never_contains_joiners():
-    assert "\u200c" not in DROPPED
-    assert "\u200d" not in DROPPED
+def test_joiners_are_never_dropped():
+    assert not is_dropped(chr(0x200C))
+    assert not is_dropped(chr(0x200D))
+
+
+@pytest.mark.parametrize(
+    "cp",
+    [
+        0x200B,
+        0x2060,
+        0xFEFF,
+        0x00AD,
+        0x200E,
+        0x200F,
+        0x202A,
+        0x202E,
+        0x2066,
+        0x2069,
+        0x034F,
+        0xFE0F,
+        0x180E,
+    ],
+)
+def test_invisible_format_characters_are_dropped(cp):
+    assert is_dropped(chr(cp))
+    assert canon("Ja" + chr(cp) + "ne") == "jane"
+
+
+@pytest.mark.parametrize("ch", ["a", " ", "-", chr(0x09BE), chr(0x093C)])
+def test_visible_characters_are_not_dropped(ch):
+    assert not is_dropped(ch)
 
 
 def test_fold_with_map_tracks_origins():
@@ -78,7 +106,7 @@ def test_canon_is_idempotent(text):
 @given(st.text())
 def test_canon_has_no_dropped_chars_or_edge_spaces(text):
     out = canon(text)
-    assert not (set(out) & DROPPED)
+    assert not any(is_dropped(c) for c in out)
     assert out == out.strip(" ")
     assert "  " not in out
 

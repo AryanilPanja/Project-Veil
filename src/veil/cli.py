@@ -22,7 +22,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    hardening.apply()
+    report = hardening.apply()
+    if not report.complete:
+        # Never silent. Commands that decrypt the persona (T9+) will refuse to run in this state.
+        ui.err(
+            "veil: warning: process hardening incomplete "
+            f"(umask={report.umask_set}, core_dumps_off={report.core_dumps_disabled}, "
+            f"non_dumpable={report.non_dumpable})"
+        )
     try:
         return run(argv)
     except VeilError as error:

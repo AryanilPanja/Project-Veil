@@ -113,17 +113,47 @@ def test_pending_stdout_is_flushed_before_exit():
     assert result.stdout == "partial output"
 
 
-def test_thread_exception_is_redacted_and_process_continues():
+def test_thread_exception_is_redacted_and_fails_closed():
+    """ADR-0022: a crashed worker stops the whole process (no half-translated output)."""
     code = (
-        "import threading\nfrom veil import hardening\nhardening.apply()\n"
+        "import threading, time\nfrom veil import hardening\nhardening.apply()\n"
         f"def boom():\n    raise ValueError({SECRET!r})\n"
-        "t = threading.Thread(target=boom); t.start(); t.join()\nprint('main continued')"
+        "t = threading.Thread(target=boom); t.start(); t.join()\n"
+        "time.sleep(0.5)\nprint('main continued')"
+    )
+    result = run_python(code)
+    assert result.returncode == ExitCode.INTERNAL
+    assert "main continued" not in result.stdout
+    assert "ValueError" in result.stderr
+    assert "Jane" not in result.stderr
+
+
+def test_system_exit_in_thread_is_a_normal_thread_exit():
+    code = (
+        "import sys, threading\nfrom veil import hardening\nhardening.apply()\n"
+        "t = threading.Thread(target=lambda: sys.exit(3)); t.start(); t.join()\n"
+        "print('main continued')"
     )
     result = run_python(code)
     assert result.returncode == 0
     assert "main continued" in result.stdout
+    assert result.stderr == ""
+
+
+def test_unraisable_exception_is_redacted():
+    code = (
+        "import gc\nfrom veil import hardening\nhardening.apply()\n"
+        "class Leaky:\n"
+        f"    def __repr__(self):\n        return {SECRET!r}\n"
+        f"    def __del__(self):\n        raise ValueError({SECRET!r})\n"
+        "x = Leaky(); del x; gc.collect()\nprint('done')"
+    )
+    result = run_python(code)
+    assert result.returncode == 0
+    assert "done" in result.stdout
     assert "ValueError" in result.stderr
-    assert "Jane" not in result.stderr
+    for fragment in ("Jane", "9876543210", "example.test"):
+        assert fragment not in result.stderr
 
 
 def test_without_hardening_python_would_leak():
