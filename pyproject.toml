@@ -58,3 +58,4 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 xfail_strict = true
 filterwarnings = ["error"]
+markers = ["slow_scrypt: uses real age scrypt (about 1.5 s per call)"]

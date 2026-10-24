@@ -30,6 +30,17 @@ def _no_process_hardening_in_test_process(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _no_real_keyring(monkeypatch):
+    """No test may reach the owner's real KDE Wallet / Secret Service."""
+    from veil.crypto import keystore
+
+    def forbidden():
+        raise AssertionError("a test tried to use the real Secret Service keyring")
+
+    monkeypatch.setattr(keystore, "secret_service_backend", forbidden)
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""
