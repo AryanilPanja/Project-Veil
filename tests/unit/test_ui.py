@@ -181,3 +181,41 @@ def test_new_secret_mismatch_is_usage_error_without_echo(interactive, getpass_an
     assert info.value.exit_code == ExitCode.USAGE
     assert "first" not in str(info.value)
     assert "second" not in str(info.value)
+
+
+# ── choose ────────────────────────────────────────────────────────────────────
+
+OPTIONS = {"r": "re-open", "k": "keep draft", "d": "discard"}
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [("r\n", "r"), ("K\n", "k"), ("discard\n", "d"), ("  d  \n", "d"), ("x\nr\n", "r")],
+)
+def test_choose(interactive, typed, expected):
+    interactive(typed)
+    assert ui.choose("What now?", OPTIONS, default="k") == expected
+
+
+def test_choose_eof_returns_default(interactive):
+    interactive("")
+    assert ui.choose("What now?", OPTIONS, default="k") == "k"
+
+
+def test_choose_gives_up_after_attempts(interactive):
+    interactive("x\ny\nz\n")
+    assert ui.choose("What now?", OPTIONS, default="k", attempts=3) == "k"
+
+
+def test_choose_prompts_on_stderr_with_menu(interactive, capsys):
+    interactive("d\n")
+    ui.choose("What now?", OPTIONS, default="k")
+    err = capsys.readouterr().err
+    assert "[r] re-open" in err
+    assert "[d] discard" in err
+
+
+def test_choose_refuses_without_terminal(monkeypatch):
+    monkeypatch.setattr("sys.stdin", FakeStream("r\n", tty=False))
+    with pytest.raises(UnsafeEnvironment):
+        ui.choose("What now?", OPTIONS, default="k")

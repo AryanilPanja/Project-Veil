@@ -70,6 +70,24 @@ def new_secret(prompt: str) -> str:
     return first
 
 
+def choose(prompt: str, options: dict[str, str], *, default: str, attempts: int = 5) -> str:
+    """Ask for one of `options` (key → label) by its first letter. EOF or no valid answer → default.
+
+    Prompts go to stderr; needs a terminal (never answerable from a pipe).
+    """
+    require_tty("choice")
+    menu = ", ".join(f"[{key}] {label}" for key, label in options.items())
+    for _ in range(attempts):
+        print(f"{prompt} {menu}: ", end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            return default
+        answer = line.strip().lower()[:1]
+        if answer in options:
+            return answer
+    return default
+
+
 def _isatty(stream: object) -> bool:
     isatty = getattr(stream, "isatty", None)
     if isatty is None:

@@ -43,8 +43,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     imp.add_argument(
         "--key-backend",
-        choices=("keyring", "file"),
-        help="where to keep the key on first import (default: keyring)",
+        # v0.1 offers the desktop keyring only (board Q4). Passphrase mode exists in the code and
+        # is tested, but needs a GUI prompt before it can work with hotkeys (ADR-0025 amendment).
+        choices=("keyring",),
+        help="where to keep the key on first import (v0.1: keyring only)",
     )
     imp.add_argument(
         "--shred",
@@ -64,6 +66,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-unknown-editor",
         action="store_true",
         help="allow an editor veil cannot harden (it may leave copies outside the session)",
+    )
+    drafts = edit.add_mutually_exclusive_group()
+    drafts.add_argument(
+        "--resume-draft",
+        action="store_true",
+        help="continue the encrypted draft of an unsaved edit",
+    )
+    drafts.add_argument(
+        "--discard-draft", action="store_true", help="delete the encrypted draft, then edit"
     )
     return parser
 
@@ -162,6 +173,8 @@ def _persona_edit(args: argparse.Namespace) -> int:
         store=store,
         ask_passphrase=_ask_passphrase,
         allow_unknown_editor=args.allow_unknown_editor,
+        resume_draft=args.resume_draft,
+        discard_draft=args.discard_draft,
     )
     if result.saved:
         ui.out(f"veil: persona saved and encrypted ({result.warnings} warning(s))")
