@@ -57,7 +57,20 @@ def validate(persona: Persona) -> Report:
         rows.extend(_rows_of(record, findings))
     findings.extend(validate_forms(rows))
     findings.extend(cross_field_findings(persona, records))
+    if not any(f.severity is Severity.ERROR for f in findings):
+        findings.extend(_expanded_findings(persona))
     return make_report(findings)
+
+
+def _expanded_findings(persona: Persona) -> list[Finding]:
+    """The bijection over every generated variant (name joins etc.), as the engine will see it.
+
+    Only run on an otherwise valid persona: declared-form errors would just repeat here.
+    """
+    from veil.engine.variants import expand_all, validate_expanded  # engine imports this module
+    from veil.persona.entities import flatten
+
+    return validate_expanded(expand_all(flatten(persona)))
 
 
 def validate_forms(rows: Sequence[FormRow]) -> list[Finding]:
