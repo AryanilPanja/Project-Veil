@@ -64,3 +64,7 @@ class UnsafeEnvironment(VeilError):
 
 class Aborted(VeilError):
     exit_code = ExitCode.ABORTED
+
+
+class StorageError(VeilError):
+    exit_code = ExitCode.STORAGE
