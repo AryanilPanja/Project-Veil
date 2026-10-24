@@ -49,5 +49,9 @@ CI runs the same checks on every push and pull request (`.github/workflows/ci.ym
   template.
 - Use your GitHub noreply address as your git commit email.
 
+## Current maintainers
+- Claude (Mastermind + Orchestrator)
+- Me (Dumb Human)
+
 ## License
 Not yet chosen; all rights reserved until a license is added.
