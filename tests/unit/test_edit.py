@@ -18,8 +18,8 @@ import pytest
 from tests.unit.test_check_cli import FIXTURE
 from veil import cli, ui
 from veil.crypto import age
-from veil.crypto.keystore import SERVICE, USERNAME
-from veil.errors import Busy, StorageError, UnsafeEnvironment, ValidationFailed, VeilError
+from veil.crypto.keystore import SERVICE, keyring_username
+from veil.errors import Aborted, Busy, StorageError, UnsafeEnvironment, VeilError
 from veil.exitcodes import ExitCode
 from veil.persona import canary, edit
 from veil.persona.store import STORE_FILE
@@ -66,7 +66,7 @@ def imported(veil_home, tmp_path, capsys):
 
 
 def identity_of(home):
-    return age.parse_identity(home.ring.items[(SERVICE, USERNAME)])
+    return age.parse_identity(home.ring.items[(SERVICE, keyring_username(home.config))])
 
 
 def stored_text(home) -> str:
@@ -120,8 +120,25 @@ def run_edit(home, read, runner, **kwargs):
         runner=runner,
         read=read,
         editor=kwargs.pop("editor", "nvim"),
+        choose=kwargs.pop("choose", no_questions),
         **kwargs,
     )
+
+
+def no_questions(problem: str) -> str:
+    raise AssertionError(f"unexpected question: {problem}")
+
+
+class Answers:
+    """Scripted answers to "what now?" (r / k / d), recording each problem shown."""
+
+    def __init__(self, *answers: str):
+        self.answers = list(answers)
+        self.problems: list[str] = []
+
+    def __call__(self, problem: str) -> str:
+        self.problems.append(problem)
+        return self.answers.pop(0)
 
 
 # ── editor command ────────────────────────────────────────────────────────────
@@ -357,7 +374,9 @@ class TestHappyPath:
         shutil.copyfile(FIXTURE, source)
         secrets = ["correct horse battery"] * 2
         monkeypatch.setattr(ui, "prompt_secret", lambda _p: secrets.pop(0))
-        cli.main(["persona", "import", "--key-backend", "file", str(source)])
+        from tests.unit.test_import_cli import import_file_mode
+
+        import_file_mode(veil_home, source)
         asked: list[int] = []
 
         def ask():
@@ -399,24 +418,37 @@ class TestFailuresLeaveNoTrace:
     def test_invalid_edit_not_saved(self, setup, capsys):
         home, read, unchanged = setup
         broken = replace("fidelity: semantic", "fidelity: semantic\nnot_a_field: 1")
-        with pytest.raises(ValidationFailed, match="nothing was saved") as info:
-            run_edit(home, read, FakeEditor(broken))
-        assert info.value.exit_code == ExitCode.FINDINGS
+        answers = Answers("d")
+        with pytest.raises(Aborted, match="discarded") as info:
+            run_edit(home, read, FakeEditor(broken), choose=answers)
+        assert info.value.exit_code == ExitCode.ABORTED
+        assert answers.problems == ["the edited persona has 1 error(s)"]
         assert "E003" in capsys.readouterr().out
+        assert not (home.config / "persona.draft.age").exists()
         unchanged()
 
     def test_yaml_syntax_error_not_saved(self, setup):
         home, read, unchanged = setup
-        with pytest.raises(ValidationFailed):
-            run_edit(home, read, FakeEditor(lambda f: f.write_text("version: [\n")))
+        with pytest.raises(Aborted):
+            run_edit(
+                home, read, FakeEditor(lambda f: f.write_text("version: [\n")), choose=Answers("d")
+            )
         unchanged()
 
     def test_editor_failure_status(self, setup):
         home, read, unchanged = setup
         editor = FakeEditor(replace("fidelity: semantic", "fidelity: loose"), status=1)
-        with pytest.raises(VeilError, match="exited with status 1") as info:
-            run_edit(home, read, editor)
+        answers = Answers("d")
+        with pytest.raises(Aborted) as info:
+            run_edit(home, read, editor, choose=answers)
         assert info.value.exit_code == ExitCode.ABORTED
+        assert answers.problems == ["the editor exited with status 1 after changes"]
+        unchanged()
+
+    def test_editor_failure_without_changes_asks_nothing(self, setup):
+        home, read, unchanged = setup
+        with pytest.raises(Aborted, match="exited with status 2; nothing was saved"):
+            run_edit(home, read, FakeEditor(status=2))
         unchanged()
 
     def test_interrupt_during_editing(self, setup):
@@ -427,8 +459,10 @@ class TestFailuresLeaveNoTrace:
 
     def test_editor_deletes_the_file(self, setup):
         home, read, unchanged = setup
-        with pytest.raises(StorageError):
-            run_edit(home, read, FakeEditor(lambda f: f.unlink()))
+        answers = Answers("d")
+        with pytest.raises(Aborted):
+            run_edit(home, read, FakeEditor(lambda f: f.unlink()), choose=answers)
+        assert answers.problems == ["the editor removed the file"]
         unchanged()
 
     def test_editor_replaces_file_with_symlink(self, setup, tmp_path):
@@ -627,3 +661,333 @@ class TestRealNvimHeadless:
         assert result.saved
         assert "fidelity: loose" in stored_text(imported)
         assert sorted(p for p in home.rglob("*")) == before
+
+
+# ── T13: re-open / draft / signals / stale sessions ───────────────────────────
+
+BROKEN = ("fidelity: semantic", "fidelity: semantic\nnot_a_field: 1")
+FIX_AND_CHANGE = ("fidelity: semantic\nnot_a_field: 1", "fidelity: max")
+DRAFT = "persona.draft.age"
+
+
+def draft_text(home) -> str:
+    from veil.persona.draft import DraftStore
+
+    return DraftStore(home.config).load(identity_of(home)).decode()
+
+
+class Rounds:
+    """An editor whose behaviour changes on each launch (one action per round)."""
+
+    def __init__(self, *rounds):
+        self.rounds = list(rounds)
+        self.seen_texts: list[str] = []
+
+    def __call__(self, command: edit.EditorCommand, session: Path) -> int:
+        file = Path(command.argv[-1])
+        self.seen_texts.append(file.read_text(encoding="utf-8") if file.exists() else "")
+        action = self.rounds.pop(0)
+        if action is not None:
+            action(file)
+        return 0
+
+
+@pytest.fixture
+def ready(imported, runtime, tty):
+    base, read, _files = runtime
+    return imported, read, base
+
+
+class TestReopen:
+    def test_reopen_keeps_your_work_then_saves(self, ready):
+        home, read, _ = ready
+        editor = Rounds(replace(*BROKEN), replace(*FIX_AND_CHANGE))
+        result = run_edit(home, read, editor, choose=Answers("r"))
+        assert result.saved
+        assert "not_a_field" in editor.seen_texts[1]  # the second launch shows the broken text
+        assert "not_a_field" not in stored_text(home)
+
+    def test_several_rounds(self, ready):
+        home, read, _ = ready
+        editor = Rounds(
+            replace(*BROKEN),
+            None,  # user changes nothing, still broken
+            replace("not_a_field: 1\n", "fidelity_typo: x\n"),
+            replace("fidelity: semantic\nfidelity_typo: x", "fidelity: max"),
+        )
+        answers = Answers("r", "r", "r")
+        assert run_edit(home, read, editor, choose=answers).saved
+        assert len(answers.problems) == 3
+
+    def test_reverting_everything_on_reopen_is_no_change(self, ready):
+        home, read, _ = ready
+        before = (home.config / STORE_FILE).read_bytes()
+        editor = Rounds(replace(*BROKEN), replace("\nnot_a_field: 1", ""))
+        result = run_edit(home, read, editor, choose=Answers("r"))
+        assert result == edit.EditResult(changed=False, saved=False, warnings=0)
+        assert (home.config / STORE_FILE).read_bytes() == before
+
+    def test_deleted_file_is_restored_on_reopen(self, ready):
+        home, read, _ = ready
+        editor = Rounds(lambda f: f.unlink(), replace("fidelity: semantic", "fidelity: max"))
+        assert run_edit(home, read, editor, choose=Answers("r")).saved
+        assert "fidelity: semantic" in editor.seen_texts[1]
+        assert "fidelity: max" in stored_text(home)
+
+    def test_reopen_after_editor_crash_with_changes(self, ready):
+        home, read, _ = ready
+        launches = {"n": 0}
+
+        def runner(command, session):
+            launches["n"] += 1
+            file = Path(command.argv[-1])
+            if launches["n"] == 1:
+                file.write_text(file.read_text().replace("fidelity: semantic", "fidelity: loose"))
+                return 134  # e.g. SIGABRT
+            return 0
+
+        assert run_edit(home, read, runner, choose=Answers("r")).saved
+        assert "fidelity: loose" in stored_text(home)
+
+
+class TestDraft:
+    def test_keep_draft_saves_encrypted_draft_only(self, ready):
+        home, read, base = ready
+        before = (home.config / STORE_FILE).read_bytes()
+        with pytest.raises(Aborted, match="encrypted draft") as info:
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        assert info.value.exit_code == ExitCode.ABORTED
+        assert (home.config / STORE_FILE).read_bytes() == before
+        raw = (home.config / DRAFT).read_bytes()
+        assert age.is_age(raw)
+        assert b"not_a_field" not in raw
+        assert b"Jane" not in raw
+        assert mode(home.config / DRAFT) == 0o600
+        assert "not_a_field: 1" in draft_text(home)
+        assert list((base / "veil").iterdir()) == []
+
+    def test_resume_draft_then_fix_and_save_removes_draft(self, ready):
+        home, read, _ = ready
+        with pytest.raises(Aborted):
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        editor = FakeEditor(replace(*FIX_AND_CHANGE))
+        assert run_edit(home, read, editor, resume_draft=True).saved
+        assert "not_a_field" in editor.seen["text"]
+        assert "fidelity: max" in stored_text(home)
+        assert not (home.config / DRAFT).exists()
+
+    def test_resume_a_valid_draft_without_further_changes_saves_it(self, ready):
+        from veil.persona.draft import DraftStore
+
+        home, read, _ = ready
+        text = canary.remove(stored_text(home)).replace("fidelity: semantic", "fidelity: max")
+        DraftStore(home.config).save(text.encode(), identity_of(home).recipient)
+        assert run_edit(home, read, FakeEditor(), resume_draft=True).saved
+        assert "fidelity: max" in stored_text(home)
+        assert not (home.config / DRAFT).exists()
+
+    def test_resume_without_draft(self, ready):
+        home, read, _ = ready
+        with pytest.raises(VeilError, match="no saved draft") as info:
+            run_edit(home, read, FakeEditor(), resume_draft=True)
+        assert info.value.exit_code == ExitCode.USAGE
+
+    def test_resume_and_discard_together(self, ready):
+        home, read, _ = ready
+        with pytest.raises(VeilError) as info:
+            run_edit(home, read, FakeEditor(), resume_draft=True, discard_draft=True)
+        assert info.value.exit_code == ExitCode.USAGE
+
+    def test_existing_draft_is_mentioned_and_left_alone(self, ready, capsys):
+        home, read, _ = ready
+        with pytest.raises(Aborted):
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        capsys.readouterr()
+        editor = FakeEditor()
+        run_edit(home, read, editor)
+        assert "an unsaved draft exists" in capsys.readouterr().err
+        assert "not_a_field" not in editor.seen["text"]
+        assert (home.config / DRAFT).exists()
+
+    def test_discard_draft(self, ready, capsys):
+        home, read, _ = ready
+        with pytest.raises(Aborted):
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        run_edit(home, read, FakeEditor(), discard_draft=True)
+        assert not (home.config / DRAFT).exists()
+        assert "draft was discarded" in capsys.readouterr().err
+
+    def test_draft_write_failure_still_wipes_session(self, ready, monkeypatch):
+        from veil.persona import draft as draft_module
+
+        home, read, base = ready
+
+        def full(*_a, **_k):
+            raise StorageError("not enough disk space to write the encrypted draft")
+
+        monkeypatch.setattr(draft_module.fsutil, "atomic_write", full)
+        with pytest.raises(StorageError):
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        assert list((base / "veil").iterdir()) == []
+
+    def test_status_reports_draft(self, ready, capsys):
+        from veil.crypto.keystore import KeyStore
+        from veil.persona.status import persona_status
+        from veil.persona.store import PersonaStore
+
+        home, read, _ = ready
+        with pytest.raises(Aborted):
+            run_edit(home, read, FakeEditor(replace(*BROKEN)), choose=Answers("k"))
+        capsys.readouterr()
+        persona_status(KeyStore(home.config, timeout=2), PersonaStore(home.config), read)
+        assert "draft:       unsaved edit present" in capsys.readouterr().out
+
+
+class TestSignals:
+    def test_sigterm_while_editing_wipes_and_unwinds(self, ready):
+        import signal
+
+        home, read, base = ready
+        before_handler = signal.getsignal(signal.SIGTERM)
+        before = (home.config / STORE_FILE).read_bytes()
+
+        def killed(command, session):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return 0
+
+        with pytest.raises(edit.Terminated):
+            run_edit(home, read, killed)
+        assert (home.config / STORE_FILE).read_bytes() == before
+        assert list((base / "veil").iterdir()) == []
+        assert signal.getsignal(signal.SIGTERM) is before_handler
+
+    def test_sighup_too(self, ready):
+        import signal
+
+        home, read, base = ready
+
+        def hung_up(command, session):
+            os.kill(os.getpid(), signal.SIGHUP)
+            return 0
+
+        with pytest.raises(KeyboardInterrupt):
+            run_edit(home, read, hung_up)
+        assert list((base / "veil").iterdir()) == []
+
+    def test_ctrl_c_inside_the_editor_is_left_to_the_editor(self, ready):
+        import signal
+
+        home, read, _ = ready
+        before_handler = signal.getsignal(signal.SIGINT)
+
+        def editor_with_ctrl_c(command, session):
+            os.kill(os.getpid(), signal.SIGINT)  # vim users press Ctrl-C all the time
+            replace("fidelity: semantic", "fidelity: loose")(Path(command.argv[-1]))
+            return 0
+
+        assert run_edit(home, read, editor_with_ctrl_c).saved
+        assert signal.getsignal(signal.SIGINT) is before_handler
+
+
+class TestStaleSessions:
+    def stale(self, base: Path, name: str = "edit-stale1", text: str | None = None) -> Path:
+        veil_dir = base / "veil"
+        veil_dir.mkdir(mode=0o700, exist_ok=True)
+        session = veil_dir / name
+        session.mkdir(mode=0o700)
+        if text is not None:
+            (session / edit.FILE_NAME).write_text(text)
+            (session / edit.FILE_NAME).chmod(0o600)
+        return session
+
+    def test_unsaved_changes_become_a_draft(self, ready, capsys):
+        home, read, base = ready
+        changed = canary.remove(stored_text(home)).replace("fidelity: semantic", "fidelity: max")
+        session = self.stale(base, text=changed)
+        run_edit(home, read, FakeEditor())
+        assert not session.exists()
+        assert "recovered unsaved edits" in capsys.readouterr().err
+        assert "fidelity: max" in draft_text(home)
+
+    def test_unchanged_stale_session_is_just_wiped(self, ready, capsys):
+        home, read, base = ready
+        session = self.stale(base, text=canary.remove(stored_text(home)))
+        run_edit(home, read, FakeEditor())
+        assert not session.exists()
+        assert not (home.config / DRAFT).exists()
+        assert "recovered" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize("text", [None, "", "   \n"])
+    def test_empty_or_missing_file(self, ready, text):
+        home, read, base = ready
+        session = self.stale(base, text=text)
+        run_edit(home, read, FakeEditor())
+        assert not session.exists()
+        assert not (home.config / DRAFT).exists()
+
+    def test_symlinked_stale_entries_are_not_followed(self, ready, tmp_path):
+        home, read, base = ready
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / edit.FILE_NAME).write_text("keep me")
+        (base / "veil").mkdir(mode=0o700, exist_ok=True)
+        (base / "veil" / "edit-link").symlink_to(outside)
+        session = self.stale(base, name="edit-real")
+        victim = tmp_path / "victim.yaml"
+        victim.write_text("victim")
+        (session / edit.FILE_NAME).symlink_to(victim)
+        run_edit(home, read, FakeEditor())
+        assert (outside / edit.FILE_NAME).read_text() == "keep me"
+        assert victim.read_text() == "victim"
+        assert list((base / "veil").iterdir()) == []
+        assert not (home.config / DRAFT).exists()
+
+    def test_other_files_in_runtime_dir_are_untouched(self, ready):
+        home, read, base = ready
+        (base / "veil").mkdir(mode=0o700, exist_ok=True)
+        other = base / "veil" / "proxy.sock-placeholder"
+        other.write_text("x")
+        run_edit(home, read, FakeEditor())
+        assert other.exists()
+
+    def test_stale_session_left_alone_when_key_unavailable(self, ready):
+        home, read, base = ready
+        session = self.stale(base, text="unsaved: work\n")
+        home.ring.items.clear()
+        with pytest.raises(VeilError):
+            run_edit(home, read, FakeEditor())
+        assert (session / edit.FILE_NAME).read_text() == "unsaved: work\n"
+
+
+class TestCliDraftFlags:
+    def test_flags_are_mutually_exclusive(self, imported):
+        with pytest.raises(SystemExit) as info:
+            cli.main(["persona", "edit", "--resume-draft", "--discard-draft"])
+        assert info.value.code == ExitCode.USAGE
+
+    def test_keep_draft_exit_code(self, imported, cli_runtime, tty, monkeypatch, capsys):
+        _, read, _ = cli_runtime
+
+        def scripted(**kw):
+            kw.pop("read", None)
+            return _ORIGINAL_EDIT(  # cli_runtime already wrapped edit_persona; use the real one
+                read=read,
+                runner=FakeEditor(replace(*BROKEN)),
+                choose=Answers("k"),
+                editor="nvim",
+                **kw,
+            )
+
+        monkeypatch.setattr(edit, "edit_persona", scripted)
+        assert cli.main(["persona", "edit"]) == ExitCode.ABORTED
+        assert "--resume-draft" in capsys.readouterr().err
+
+    def test_cli_maps_terminated_to_130(self, imported, cli_runtime, tty, monkeypatch):
+        def boom(**_kw):
+            raise edit.Terminated("signal 15")
+
+        monkeypatch.setattr(edit, "edit_persona", boom)
+        assert cli.main(["persona", "edit"]) == ExitCode.INTERRUPTED
+
+
+_ORIGINAL_EDIT = edit.edit_persona

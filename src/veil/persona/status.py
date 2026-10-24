@@ -15,6 +15,7 @@ from veil import paths, ui
 from veil.crypto.keystore import KeyBackend, KeyStore
 from veil.errors import VeilError
 from veil.exitcodes import ExitCode
+from veil.persona.draft import DraftStore
 from veil.persona.store import PersonaStore
 
 
@@ -28,6 +29,9 @@ def persona_status(
     ui.out(
         f"store:       {'encrypted persona present' + backup if has_store else 'not imported yet'}"
     )
+
+    if DraftStore(store.directory).exists():
+        ui.out("draft:       unsaved edit present (`veil persona edit --resume-draft`)")
 
     key = keystore.status()
     ui.out(f"key:         {_describe_key(key.backend)}")
