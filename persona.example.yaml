@@ -226,8 +226,8 @@ numbers:
   date_shift_days: 0            # applies to SHIFT dates with an empty fake
 
 never_translate:                # tokens that look like PII but must pass through
-  - Ada                         # programming language
-  - Turing                      # Alan Turing / Turing machine in normal prose
+  - Ruby                        # a first name, but also a programming language
+  - Julia                       # a first name, but also a programming language
 
 never_reverse: []               # famous entities containing one of your FAKE forms: never reverse-translate
                                 # e.g. if your fake first name were "Ravi": ["Ravi Shastri", "Ravi Varma"]
