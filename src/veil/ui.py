@@ -3,9 +3,11 @@
 Messages must contain field paths, codes and counts only, never persona values.
 """
 
+import getpass
 import sys
 
 from veil.errors import UnsafeEnvironment, VeilError
+from veil.exitcodes import ExitCode
 
 
 def out(message: str) -> None:
@@ -47,6 +49,25 @@ def confirm_typed(prompt: str, expected: str) -> bool:
     if not answer:
         return False
     return answer.strip() == expected
+
+
+def prompt_secret(prompt: str) -> str:
+    """Read a secret without echo. Needs a terminal; never readable from a pipe (agents)."""
+    require_tty("passphrase prompt")
+    try:
+        return getpass.getpass(f"{prompt}: ", stream=sys.stderr)
+    except EOFError:
+        return ""
+
+
+def new_secret(prompt: str) -> str:
+    """Ask twice for a new secret; a mismatch is an error (nothing is set up)."""
+    first = prompt_secret(prompt)
+    if prompt_secret(f"{prompt} (again)") != first:
+        raise VeilError(
+            "the passphrases did not match; nothing was changed", exit_code=ExitCode.USAGE
+        )
+    return first
 
 
 def _isatty(stream: object) -> bool:
