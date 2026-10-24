@@ -22,6 +22,10 @@ from veil.persona.policy import REVERSIBLE, Policy, default_policy, effective_po
         ("education[3].roll_number", Policy.FPE),
         ("work[1].employee_id", Policy.FPE),
         ("education[0].institution", Policy.SWAP),
+        ("ids.address[0]", Policy.SWAP),  # field default beats the `ids` section default
+        ("ids.pin_codes[0]", Policy.FPE),
+        ("footprint.public_repo_names[0]", Policy.SWAP),
+        ("footprint.thesis_title", Policy.GENERALIZE),
         ("idsx.thing", Policy.SWAP),  # prefix must match a whole segment
         ("sensitive_notes", Policy.SWAP),
         ("", Policy.SWAP),

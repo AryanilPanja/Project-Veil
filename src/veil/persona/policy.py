@@ -26,10 +26,12 @@ SECTION_DEFAULTS: dict[str, Policy] = {
     "handles.orcid": Policy.FPE,
 }
 
-# Leaf names that default to FPE wherever they appear (education[i].roll_number, work[i]...).
+# Leaf names whose default overrides their section's, wherever they appear.
 FIELD_DEFAULTS: dict[str, Policy] = {
     "roll_number": Policy.FPE,
     "employee_id": Policy.FPE,
+    "address": Policy.SWAP,  # under `ids`, but an address is a realistic swap, not a token
+    "public_repo_names": Policy.SWAP,  # under `footprint`, but a repo name is a name to swap
 }
 
 # Where a policy may be used at all (checked by the validator, E020). None = anywhere.
