@@ -1,0 +1,170 @@
+# SYNTHETIC test persona: every value is invented (Jane Doe → Alex Smith).
+# Used by the test suite only. Never put real data here.
+# (Named without "persona" + ".yaml" so the agent deny rules don't block commands that mention it.)
+version: "1"
+fidelity: semantic
+
+person:
+  first_name:   { real: Jane, fake: Alex }
+  short_name:   { real: Janie, fake: Al }
+  last_name:    { real: Doe, fake: Smith }
+  full_name:    { real: Jane Doe, fake: Alex Smith }
+  middle_name:  { real: "", fake: "" }
+  nicknames:
+    - { real: JD, fake: AS, allow_short: true }
+  name_in_other_scripts:
+    - { real: জেন, fake: অ্যালেক্স }      # Bengali
+    - { real: जेन, fake: एलेक्स }         # Devanagari
+    - { real: ஜேன், fake: அலெக்ஸ் }       # Tamil
+  gender:        { real: f, fake: f }
+  pronouns:      { real: she/her, fake: she/her }
+  date_of_birth: { real: "14/03/2001", fake: "", policy: SHIFT }
+  hometown:      { real: Springfield, fake: Rivertown }
+  hometown_aliases: { real: [Springfield City], fake: [Rivertown City] }
+  home_state:    { real: Northshire, fake: Southshire }
+  current_city:  { real: Metro City, policy: KEEP }
+  languages:     { real: English, policy: KEEP }
+
+emails:
+  - { real: jane.doe@xyz.example.test, fake: alex.smith@abc.example.test }
+  - { real: janedoe2001@mail.example.test, fake: alexsmith2001@mail.example.test }
+
+phones:
+  - { real: "+91 90000 00001", fake: "", policy: FPE }
+
+handles:
+  linux_user:  { real: janed, fake: alexs }
+  github:      { real: jane-doe-dev, fake: alex-smith-dev }
+  gitlab:      { real: "", fake: "" }
+  linkedin:    { real: jane-doe-01, fake: alex-smith-01 }
+  twitter_x:   { real: "", fake: "" }
+  discord:     { real: "", fake: "" }
+  leetcode:    { real: "", fake: "" }
+  kaggle:      { real: "", fake: "" }
+  huggingface: { real: "", fake: "" }
+  google_scholar_id: { real: "", fake: "", policy: FPE }
+  orcid:       { real: "", fake: "", policy: FPE }
+  personal_website: { real: janedoe.example.test, fake: alexsmith.example.test }
+  upi_ids:
+    - { real: janed@bank, fake: alexs@bank }
+
+education:
+  - institution: { real: XYZ Institute of Technology, fake: ABC University }
+    aliases:     { real: [XYZIT, XYZ-IT], fake: [ABCU, ABC-U] }
+    domain:      { real: xyz.example.test, fake: abc.example.test }
+    sub_domains: { real: [research.xyz.example.test], fake: [research.abc.example.test] }
+    department:  { real: CSE, policy: KEEP }
+    lab:         { real: Vision Lab, fake: Signal Group, aliases: { real: [VL], fake: [SG] } }
+    degree:
+      enabled: true
+      real: MS
+      fake: PhD
+      phrases:
+        real: [MS student, my MS, MS thesis]
+        fake: [PhD student, my PhD, PhD thesis]
+    year_of_study:
+      enabled: true
+      real: "2"
+      fake: "3"
+      context_required: true
+    batch_year:  { real: "2024", fake: "2023" }
+    advisor:
+      real: Prof. Mary Major
+      fake: Prof. Ann Minor
+      title: { real: Prof., fake: Prof. }
+      forms:
+        real: [M. Major, mmajor]
+        fake: [A. Minor, aminor]
+    research_area: { real: document OCR, fake: a vision problem, policy: GENERALIZE, enabled: false }
+    roll_number: { real: "2024701001", fake: "", policy: FPE }
+    hostel_room: { real: "Block A 101", fake: "Block Z 909" }
+  - institution: { real: Old Town School, fake: New Town School }
+    aliases:     { real: [], fake: [] }
+    board:       { real: CBSE, policy: KEEP }
+
+work:
+  - employer:    { real: Acme Labs, fake: Globex }
+    team:        { real: Search, fake: Ranking }
+    manager:     { real: Bob Builder, fake: Carl Creator }
+    employee_id: { real: "E-1001", fake: "", policy: FPE }
+    role:        { real: Intern, policy: KEEP }
+
+people:
+  - { real: John Doe, fake: Sam Smith, relation: father }
+  - { real: Joan Doe, fake: Kim Smith, relation: mother }
+  - { real: Roe, fake: Lane, relation: mother_maiden_name }
+  - { real: Ravi Kumar, fake: Om Prakash, relation: friend }
+
+infra:
+  hostname:     { real: janed, fake: alexs }
+  home_dir:     { real: /home/janed, fake: /home/alexs }
+  clusters:
+    - { real: orion, fake: kepler, contexts: [ssh, slurm, cluster] }
+  cluster_usernames:
+    - { real: jane.doe, fake: alex.smith }
+  slurm_accounts:
+    - { real: vision_lab, fake: signal_grp }
+  wifi_ssids:
+    - { real: DoeHome, fake: SmithHome }
+  ip_addresses: { policy: FPE }
+  mac_addresses: { policy: FPE }
+  private_repos:
+    - { real: jane-thesis, fake: alex-thesis }
+
+ids:
+  aadhaar:         { real: "", fake: "", policy: FPE }
+  pan:             { real: "", fake: "", policy: FPE }
+  passport:        { real: "", fake: "", policy: FPE }
+  voter_id:        { real: "", fake: "", policy: FPE }
+  driving_licence: { real: "", fake: "", policy: FPE }
+  bank_accounts:
+    - { real: "", fake: "", policy: FPE }
+  cards:
+    - { real: "", fake: "", policy: FPE }
+  ifsc:            { real: "", fake: "", policy: FPE }
+  address:
+    - { real: 1 Example Street Springfield, fake: 9 Sample Road Rivertown }
+  pin_codes:
+    - { real: "000001", fake: "999999" }
+
+attributes:
+  pets:
+    - { species: { real: cat, fake: cat }, name: { real: Mochi, fake: Bruno }, breed: { real: "", fake: "" }, policy: SWAP_NAME_ONLY }
+  first_pet_name:   { real: Mochi, fake: Bruno }
+  first_school:     { real: Old Town School, fake: New Town School }
+  childhood_street: { real: Elm Street, fake: Oak Lane }
+  favourite_food:   { real: pizza, policy: KEEP }
+  favourite_sport_team: { real: "", policy: KEEP }
+  favourite_movie_book: { real: "", policy: KEEP }
+  hobbies:
+    - { real: chess, policy: KEEP }
+  vehicle:          { real: "Scooter XX01 AB 1234", fake: "Scooter YY09 CD 5678" }
+  custom:
+    - { category: club, real: Robotics Club, fake: Debate Society, policy: SWAP }
+
+sensitive:
+  default_policy: ASK
+  ask_timeout_seconds: "120"
+  health:    { real: [asthma], generalized: a chronic condition, policy: ASK }
+  religion:  { real: [], generalized: "", policy: ASK }
+  caste:     { real: [], generalized: "", policy: ASK }
+  political: { real: [], generalized: "", policy: ASK }
+  sexuality: { real: [], generalized: "", policy: ASK }
+
+footprint:
+  paper_titles:
+    - { real: Robust OCR for Low Resource Scripts, fake: a paper on document recognition }
+  thesis_title: { real: "", fake: "" }
+  public_repo_names:
+    - { real: ocr-toolkit, fake: vision-toolkit }
+  profile_urls_to_index: []
+
+numbers:
+  date_shift_days: "-37"
+
+never_translate:
+  - Ruby
+  - Julia
+
+never_reverse:
+  - Alex Smith Stadium
