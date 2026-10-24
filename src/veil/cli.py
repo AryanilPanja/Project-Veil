@@ -55,6 +55,16 @@ def build_parser() -> argparse.ArgumentParser:
     persona_commands.add_parser(
         "status", help="safe diagnostics: store, key, runtime dir, swap (no values)"
     )
+
+    edit = persona_commands.add_parser(
+        "edit",
+        help="HUMAN-ONLY: edit the encrypted persona in a hardened editor (shows real values)",
+    )
+    edit.add_argument(
+        "--allow-unknown-editor",
+        action="store_true",
+        help="allow an editor veil cannot harden (it may leave copies outside the session)",
+    )
     return parser
 
 
@@ -89,6 +99,8 @@ def run(argv: Sequence[str] | None) -> int:
         return _persona_import(args)
     if args.command == "persona" and args.persona_command == "status":
         return _persona_status()
+    if args.command == "persona" and args.persona_command == "edit":
+        return _persona_edit(args)
     if args.command == "persona":
         parser.parse_args(["persona", "--help"])
     parser.print_help()
@@ -139,6 +151,21 @@ def _persona_status() -> int:
 
     keystore, store = _stores()
     return persona_status(keystore, store)
+
+
+def _persona_edit(args: argparse.Namespace) -> int:
+    from veil.persona.edit import edit_persona
+
+    keystore, store = _stores()
+    result = edit_persona(
+        keystore=keystore,
+        store=store,
+        ask_passphrase=_ask_passphrase,
+        allow_unknown_editor=args.allow_unknown_editor,
+    )
+    if result.saved:
+        ui.out(f"veil: persona saved and encrypted ({result.warnings} warning(s))")
+    return int(ExitCode.OK)
 
 
 def _stores():

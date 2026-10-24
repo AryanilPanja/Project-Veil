@@ -4,7 +4,9 @@ version = "0.1.0.dev0"
 description = "Pseudonymize personal information into a consistent persona before it reaches an AI provider"
 readme = "README.md"
 requires-python = ">=3.13"
-# No `license` yet: the owner decides before any public release (TODO-later).
+# All rights reserved (see LICENSE). "LicenseRef-Proprietary" is the SPDX form for unlisted terms.
+license = "LicenseRef-Proprietary"
+license-files = ["LICENSE"]
 # No `authors`: keep personal contact data out of committed files.
 dependencies = [
     "pydantic>=2.12,<3",

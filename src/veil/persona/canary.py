@@ -39,13 +39,18 @@ def find_all(text: str) -> list[str]:
     return PATTERN.findall(text)
 
 
+def remove(yaml_text: str) -> str:
+    """Strip the canary lines `insert` adds (for showing the persona in an editor)."""
+    text = _CANARY_KEY_LINE.sub("", yaml_text.removeprefix(_BOM))
+    return _CANARY_COMMENT_LINE.sub("", text)
+
+
 def insert(yaml_text: str, canary: str) -> str:
     """Return `yaml_text` with `canary` added (any previous canary lines are replaced)."""
     if not is_canary(canary):
         raise ValueError("not a veil canary")
     newline = "\r\n" if "\r\n" in yaml_text else "\n"
-    text = _CANARY_KEY_LINE.sub("", yaml_text.removeprefix(_BOM))
-    text = _CANARY_COMMENT_LINE.sub("", text)
+    text = remove(yaml_text)
     version = _VERSION_LINE.search(text)
     if version is None:
         raise ValidationFailed(

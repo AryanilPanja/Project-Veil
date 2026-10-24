@@ -41,6 +41,13 @@ def _no_real_config_dirs(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_editor(monkeypatch):
+    """The owner's $VISUAL/$EDITOR must never launch during tests (it would wait for a human)."""
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_keyring(monkeypatch):
     """No test may reach the owner's real KDE Wallet / Secret Service."""
     from veil.crypto import keystore

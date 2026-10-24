@@ -83,4 +83,4 @@ CI runs the same checks on every push and pull request (`.github/workflows/ci.ym
 - Me (Dumb Human)
 
 ## License
-Not yet chosen; all rights reserved until a license is added.
+Proprietary: all rights reserved. The source is publicly visible, but no permission is granted to use, copy, modify, or distribute it. See [LICENSE](LICENSE).

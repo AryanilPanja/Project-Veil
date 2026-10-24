@@ -154,3 +154,25 @@ class TestInsert:
         if not text.endswith("\n"):
             restored = restored.removesuffix("\n")
         assert restored == text
+
+
+class TestRemove:
+    BASE = 'version: "1"\nperson:\n  first_name: { real: Jane, fake: Alex }\n'
+
+    def test_remove_inverts_insert(self):
+        assert canary.remove(canary.insert(self.BASE, C)) == self.BASE
+
+    def test_remove_crlf(self):
+        text = self.BASE.replace("\n", "\r\n")
+        assert canary.remove(canary.insert(text, C)) == text
+
+    def test_remove_without_canary_is_identity(self):
+        assert canary.remove(self.BASE) == self.BASE
+
+    def test_remove_keeps_indented_or_quoted_mentions(self):
+        text = self.BASE + f'never_translate: ["{C}"]\n  veil_canary: nested\n'
+        assert canary.remove(text) == text
+
+    def test_reinsert_same_canary_round_trip(self):
+        stored = canary.insert(self.BASE, C)
+        assert canary.insert(canary.remove(stored), C) == stored
