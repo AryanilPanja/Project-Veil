@@ -21,6 +21,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"veil {__version__}")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
+    for name, help_text in (
+        ("translate", "real → fake: translate text from stdin (or --file) to stdout"),
+        ("reverse", "HUMAN-ONLY: fake → real (the output contains your real details)"),
+        ("audit", "report real details in text by position and field path (exit 1 if any)"),
+    ):
+        text_cmd = commands.add_parser(name, help=help_text)
+        text_cmd.add_argument("--file", type=Path, help="read this file instead of stdin")
+
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
     check = persona_commands.add_parser(
@@ -104,6 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def run(argv: Sequence[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in ("translate", "reverse", "audit"):
+        return _text_command(args)
     if args.command == "persona" and args.persona_command == "check":
         return _persona_check(args)
     if args.command == "persona" and args.persona_command == "import":
@@ -179,6 +189,18 @@ def _persona_edit(args: argparse.Namespace) -> int:
     if result.saved:
         ui.out(f"veil: persona saved and encrypted ({result.warnings} warning(s))")
     return int(ExitCode.OK)
+
+
+def _text_command(args: argparse.Namespace) -> int:
+    from veil import textcmd
+    from veil.engine.load import load_engine
+
+    def load():
+        keystore, store = _stores()
+        return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
+
+    command = {"translate": textcmd.translate, "reverse": textcmd.reverse, "audit": textcmd.audit}
+    return command[args.command](load, args.file)
 
 
 def _stores():

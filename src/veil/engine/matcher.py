@@ -120,6 +120,14 @@ class Matcher:
         return "".join(out)
 
 
+@dataclass(frozen=True, slots=True)
+class AuditHit:
+    line: int  # 1-based
+    column: int  # 1-based, in characters of the raw input
+    path: str  # the persona field path of the entity
+    kind: str  # entity kind (name, email, phone…)
+
+
 class Engine:
     """forward (real → fake) and reverse (fake → real) over one lexicon."""
 
@@ -138,6 +146,19 @@ class Engine:
 
     def reverse(self, text: str) -> str:
         return self.reverse_matcher.apply(text)
+
+    def audit(self, text: str) -> list["AuditHit"]:
+        """Every real form in `text` (context guards ignored: an audit must be conservative).
+
+        Positions and field paths only; the matched text is never part of the result.
+        """
+        hits: list[AuditHit] = []
+        for match in self.forward_matcher.find(text, use_context=False):
+            line = text.count("\n", 0, match.start) + 1
+            column = match.start - (text.rfind("\n", 0, match.start) + 1) + 1
+            entity = match.form.entity
+            hits.append(AuditHit(line, column, entity.sources[0], entity.kind.value))
+        return hits
 
     def ambiguous(self, text: str) -> dict[str, int]:
         """Fake forms already present in real input, by entity id → count (spec §5.5, §5.7).
