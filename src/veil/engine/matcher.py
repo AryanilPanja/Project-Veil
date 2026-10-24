@@ -2,8 +2,8 @@
 
 Selection has the same semantics as the reference translator (`reference.py`, the oracle):
 every bounded hit of every form (case-insensitive, invisible characters ignored) → drop hits on
-`never_translate` text and context-guarded forms without a keyword within CONTEXT_WINDOW →
-leftmost-longest, ties broken by lexicon order.
+`never_translate` text and context-guarded forms without a bounded keyword in their window
+(context.py) → leftmost-longest, ties broken by lexicon order.
 
 The difference is what gets rewritten. The reference works on NFKC text and returns NFKC text:
 it would silently turn the user's "ﬁ" into "fi" and full-width letters into ASCII. The matcher
@@ -19,12 +19,10 @@ of "ﬁ") is rejected, so veil never edits half of a character.
 import unicodedata
 from dataclasses import dataclass
 
+from veil.engine.context import context_near, overlaps_any
 from veil.engine.lexicon import Form, Lexicon
 from veil.text.aho import PatternIndex
 from veil.text.containment import PreparedText
-from veil.text.normalize import canon
-
-CONTEXT_WINDOW = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,15 +76,20 @@ class Matcher:
         self.forms = forms
         self.skip = skip
         self._index = PatternIndex([f.variant.real for f in forms])
+        self._protected = PatternIndex(sorted(skip))
 
     def __repr__(self) -> str:
         return f"Matcher(forms={len(self.forms)})"
 
-    def find(self, raw: str) -> list[RawMatch]:
-        """The chosen matches, in order, with their replacement text."""
+    def find(self, raw: str, *, use_context: bool = True) -> list[RawMatch]:
+        """The chosen matches, in order, with their replacement text.
+
+        `use_context=False` ignores context guards (for conservative ambiguity counting).
+        """
         mapped = Mapped(raw)
         text = mapped.text
         hits = self._index.find(mapped.prepared)
+        protected = [(h.start, h.end) for h in self._protected.find(mapped.prepared)]
         hits.sort(key=lambda h: (h.start, -(h.end - h.start), h.pattern))
         chosen: list[RawMatch] = []
         cursor = 0
@@ -95,9 +98,9 @@ class Matcher:
                 continue
             found = text[hit.start : hit.end]
             form = self.forms[hit.pattern]
-            if canon(found) in self.skip:
-                continue
-            if form.entity.contexts and not _context_near(text, hit.start, hit.end, form):
+            if overlaps_any(hit.start, hit.end, protected):
+                continue  # inside a never_translate / never_reverse phrase
+            if use_context and not context_near(text, hit.start, hit.end, form.entity):
                 continue
             raw_span = mapped.to_raw(hit.start, hit.end)
             if raw_span is None:
@@ -136,6 +139,22 @@ class Engine:
     def reverse(self, text: str) -> str:
         return self.reverse_matcher.apply(text)
 
+    def ambiguous(self, text: str) -> dict[str, int]:
+        """Fake forms already present in real input, by entity id → count (spec §5.5, §5.7).
+
+        Such text cannot round-trip: after translation nobody can tell the genuine occurrence
+        from a translated one. Context guards are ignored here on purpose: forward translation
+        can create the context a guarded fake form needs ("3rd year" next to a translated
+        institution), so counting must be conservative. Callers warn (counts and entity ids
+        only, never the text); the proxy's taint tracking (v0.2) builds on this.
+        `never_reverse` names are not counted: they are handled explicitly.
+        """
+        counts: dict[str, int] = {}
+        for match in self.reverse_matcher.find(text, use_context=False):
+            entity_id = match.form.entity.id
+            counts[entity_id] = counts.get(entity_id, 0) + 1
+        return counts
+
 
 def _clusters(raw: str) -> list[tuple[int, int]]:
     """(start, end) of each base character plus the combining marks that follow it."""
@@ -146,8 +165,3 @@ def _clusters(raw: str) -> list[tuple[int, int]]:
             spans.append((start, i))
             start = i
     return spans if raw else []
-
-
-def _context_near(text: str, start: int, end: int, form: Form) -> bool:
-    window = canon(text[max(0, start - CONTEXT_WINDOW) : end + CONTEXT_WINDOW])
-    return any(canon(c) and canon(c) in window for c in form.entity.contexts)

@@ -2,9 +2,11 @@
 
 Semantics (spec v0.2 §5.3), deliberately naive:
 - candidates: every bounded occurrence of every form (M0 `find_bounded`, case-insensitive);
-- a form whose entity has `contexts` counts only if a context keyword occurs within
-  CONTEXT_WINDOW characters;
-- a candidate whose text is a `never_translate` token is skipped;
+- a form whose entity has `contexts` counts only if a context keyword occurs (bounded) within
+  the entity's window (context.py);
+- a candidate overlapping an occurrence of a `never_translate` (forward) or `never_reverse`
+  (reverse) phrase is skipped ("Thakur" inside "Anurag Thakur" stays);
+- a candidate that would split a base character from its combining marks is skipped;
 - leftmost-longest: sort by (start, -length) and take non-overlapping candidates greedily;
 - each match is replaced by `variant.fake_for(matched text)` (keeps the case pattern).
 
@@ -12,13 +14,12 @@ Works on the NFKC form of the input and returns NFKC text. The production matche
 spans back to the raw input instead, so it never normalizes untouched text.
 """
 
+import unicodedata
 from dataclasses import dataclass
 
+from veil.engine.context import context_near, overlaps_any
 from veil.engine.lexicon import Form, Lexicon
 from veil.text.containment import PreparedText, find_bounded
-from veil.text.normalize import canon
-
-CONTEXT_WINDOW = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,15 +40,15 @@ def reverse(text: str, lexicon: Lexicon) -> str:
 def matches(text: str, forms: tuple[Form, ...], skip: frozenset[str]) -> tuple[str, list[Match]]:
     """(the NFKC text, chosen matches in order)."""
     prepared = PreparedText(text)
+    protected = [(s.start, s.end) for phrase in skip for s in find_bounded(phrase, prepared)]
     candidates: list[Match] = []
     for form in forms:
         for span in find_bounded(form.variant.real, prepared):
-            found = prepared.text[span.start : span.end]
-            if canon(found) in skip:
+            if overlaps_any(span.start, span.end, protected):
                 continue
-            if form.entity.contexts and not _context_near(
-                prepared.text, span.start, span.end, form
-            ):
+            if _splits_cluster(prepared.text, span.start, span.end):
+                continue  # never edit half of a base character + combining marks
+            if not context_near(prepared.text, span.start, span.end, form.entity):
                 continue
             candidates.append(Match(span.start, span.end, form))
     candidates.sort(key=lambda m: (m.start, -(m.end - m.start)))
@@ -72,6 +73,7 @@ def _apply(text: str, forms: tuple[Form, ...], skip: frozenset[str]) -> str:
     return "".join(out)
 
 
-def _context_near(text: str, start: int, end: int, form: Form) -> bool:
-    window = canon(text[max(0, start - CONTEXT_WINDOW) : end + CONTEXT_WINDOW])
-    return any(canon(c) and canon(c) in window for c in form.entity.contexts)
+def _splits_cluster(text: str, start: int, end: int) -> bool:
+    starts_on_mark = start < len(text) and unicodedata.combining(text[start]) != 0
+    mark_follows = end < len(text) and unicodedata.combining(text[end]) != 0
+    return starts_on_mark or mark_follows
