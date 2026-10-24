@@ -5,7 +5,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from tests.conftest import run_python
-from veil import cli
+from veil import cli, hardening
 from veil.errors import (
     Aborted,
     Busy,
@@ -88,6 +88,23 @@ def test_main_applies_hardening_once(hardening_calls):
 
 def test_success_returns_ok(capsys):
     assert cli.main([]) == ExitCode.OK
+    assert "hardening incomplete" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        hardening.HardeningReport(True, True, False),
+        hardening.HardeningReport(True, False, True),
+        hardening.HardeningReport(False, False, False),
+    ],
+)
+def test_incomplete_hardening_is_never_silent(monkeypatch, capsys, report):
+    monkeypatch.setattr(hardening, "apply", lambda: report)
+    assert cli.main([]) == ExitCode.OK
+    err = capsys.readouterr().err
+    assert "warning: process hardening incomplete" in err
+    assert f"non_dumpable={report.non_dumpable}" in err
 
 
 @given(secret=st.text(min_size=6, max_size=60).filter(lambda s: s.strip()))

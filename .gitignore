@@ -1,11 +1,17 @@
 # Real personal data: never commit
 persona.yaml
+persona*.yaml
+!persona.example.yaml
 *.vault
 vault/
 *.age
 store.db
 captures/
 *.draft*
+.env
+.env.*
+*.key
+*.pem
 
 # Python / tooling
 .venv/
@@ -17,9 +23,12 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+
+# Local-only docs and agent config (owner's choice: vetted before anything goes public)
 .claude/
 SPEC.md
 TODO-later.md
 CLAUDE.md
+README.private.md
 
 doc/

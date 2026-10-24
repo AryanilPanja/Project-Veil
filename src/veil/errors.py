@@ -30,6 +30,22 @@ class ValidationFailed(VeilError):
     exit_code = ExitCode.FINDINGS
 
 
+class PersonaFormatError(ValidationFailed):
+    """The persona file cannot be read as YAML or has the wrong overall shape.
+
+    Carries a finding code and a position only. The offending text is never included: YAML
+    parser messages quote source lines, and those lines hold persona values.
+    """
+
+    def __init__(self, code: str, problem: str, line: int | None = None, column: int | None = None):
+        where = f" at line {line}, column {column}" if line is not None else ""
+        super().__init__(f"{code} {problem}{where}")
+        self.code = code
+        self.problem = problem
+        self.line = line
+        self.column = column
+
+
 class KeyUnavailable(VeilError):
     exit_code = ExitCode.KEY_UNAVAILABLE
 

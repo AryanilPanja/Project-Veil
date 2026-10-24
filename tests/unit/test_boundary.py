@@ -77,6 +77,19 @@ CASES = [
     ("রাম", "abcরাম", True),  # Latin next to Bengali: script change
     ("आदित्य", "आदित्यjane", True),
     ("आदित्य", "श्रीआदित्य", False),
+    # Other scripts, so behaviour is not tuned to one language
+    ("ராம்", "ராம்", True),  # Tamil
+    ("ராம்", "ராம்குமார்", False),  # inside a longer Tamil word
+    ("علي", "hello علي", True),  # Arabic
+    ("علي", "عليم", False),
+    ("علي", "abcعلي", True),  # Latin next to Arabic: script change
+    # Combining marks and modifier letters belong to their base letter (no false boundary)
+    ("jaq", "jaq" + chr(0x0301), False),  # q + combining acute: no precomposed form
+    ("hawai", "Hawai" + chr(0x02BB) + "i", False),  # okina is a modifier letter (Lm)
+    ("q" + chr(0x0301), "q" + chr(0x0301) + " x", True),
+    # Deliberate over-match (lower→Upper inside a surname); safe direction for privacy
+    ("donald", "McDonald", True),
+    ("shawn", "DeShawn", True),
     # Casefold expansion must not split characters
     ("ss", "ß", True),
     ("strasse", "Straße", True),

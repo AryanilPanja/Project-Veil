@@ -4,7 +4,8 @@ A form occurring in a text is *bounded* on a side when any of these holds:
   1. the form's edge character on that side is "other" (punctuation, space, symbol);
   2. there is no neighbour (start or end of the text);
   3. the neighbour's class (letter / digit / other) differs from the edge character's class;
-  4. both are letters of different scripts (Latin next to Bengali);
+  4. both are base letters of different scripts (Latin next to Bengali); combining marks and
+     modifier letters take their base letter's script;
   5. there is a lower→Upper case transition across the edge (`janeResume`, `myJane`).
 
 Combining marks (Unicode M*) count as letters, so Indic vowel signs never split a word.
@@ -36,6 +37,17 @@ def script(ch: str) -> str:
     return name.split(" ", 1)[0] if name else "UNKNOWN"
 
 
+def _has_own_script(ch: str) -> bool:
+    """Combining marks (M*) and modifier letters (Lm, e.g. the Hawaiian okina) belong to their
+    base letter.
+
+    Their Unicode names start with COMBINING / MODIFIER, not a script, so comparing scripts
+    across them would invent a word boundary inside "q + U+0301" or "Hawai + U+02BB + i".
+    """
+    category = unicodedata.category(ch)
+    return not (category[0] == "M" or category == "Lm")
+
+
 def is_bounded(text: str, start: int, end: int) -> bool:
     """Is text[start:end] bounded on both sides? Indices are into `text` (NFKC, original case)."""
     if not 0 <= start < end <= len(text):
@@ -57,7 +69,7 @@ def _side_ok(*, edge: str, neighbour: str | None, neighbour_is_left: bool) -> bo
         return True
     if edge_class is CharClass.DIGIT:
         return False
-    if script(neighbour) != script(edge):
+    if _has_own_script(neighbour) and _has_own_script(edge) and script(neighbour) != script(edge):
         return True
     lower, upper = (neighbour, edge) if neighbour_is_left else (edge, neighbour)
     return lower.islower() and upper.isupper()

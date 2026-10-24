@@ -7,6 +7,8 @@
   message or traceback (both can contain persona values), and exits with code 70.
 """
 
+from __future__ import annotations  # sys.UnraisableHookArgs exists only for type checkers
+
 import contextlib
 import ctypes
 import ctypes.util
@@ -48,6 +50,7 @@ def apply() -> HardeningReport:
 def install_exception_hooks() -> None:
     sys.excepthook = _redacting_excepthook
     threading.excepthook = _redacting_thread_excepthook
+    sys.unraisablehook = _redacting_unraisablehook
 
 
 def is_dumpable() -> bool | None:
@@ -105,7 +108,20 @@ def _redacting_excepthook(
 
 
 def _redacting_thread_excepthook(args: threading.ExceptHookArgs) -> None:
+    # Fail closed (ADR-0022): a dead worker could leave half-translated output behind, so the
+    # whole process stops. SystemExit in a thread is a normal thread exit, as in the default hook.
+    if issubclass(args.exc_type, SystemExit):
+        return
     ui.report_internal_error(args.exc_type)
+    _flush_streams()
+    os._exit(int(ExitCode.INTERNAL))
+
+
+def _redacting_unraisablehook(unraisable: sys.UnraisableHookArgs) -> None:
+    # Errors in __del__, GC callbacks and generator finalisers. The default hook prints repr(obj)
+    # and the exception message, either of which can hold persona values. Report the class only;
+    # these do not stop the process (they happen during cleanup).
+    ui.report_internal_error(unraisable.exc_type)
 
 
 def _flush_streams() -> None:
