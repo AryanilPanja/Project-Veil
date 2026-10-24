@@ -1,0 +1,233 @@
+# persona.example.yaml: TEMPLATE ONLY (schema v1). Committed to git; must never contain real or chosen-fake values.
+#
+# To use it: copy it to persona.yaml (git-ignored), fill it in, then `veil persona check --file persona.yaml`
+# and `veil persona import persona.yaml` (this encrypts a copy; your plaintext file is left in place, ADR-0024).
+# Rules: doc/decisions/ADR-0026-persona-semantics.md. Storage and keys: ADR-0024, ADR-0025.
+#
+# How to fill:
+#   - `real:` is your actual value. `fake:` is what the AI sees instead.
+#   - Leave `real: ""` for things that don't apply; empty entries are ignored.
+#   - Every real form must map to a UNIQUE fake form, and no fake may equal or appear inside any real form
+#     (the reverse map must be unambiguous; doc/design/idea.md §3.1).
+#   - Empty fake is allowed only with policy FPE or SHIFT (auto-generated later) or KEEP; otherwise it's an error (E016).
+#   - `policy:` is one of SWAP | FPE | SHIFT | GENERALIZE | REDACT | KEEP | ASK | SWAP_NAME_ONLY (ADR-0026).
+#     If omitted, the section default applies (mostly SWAP; FPE for IDs; ASK for sensitive).
+#   - Short forms (≤ 3 characters) need `allow_short: true` or `contexts: [...]`, otherwise you get a warning (W101).
+#   - Lists (aliases, phrases, forms) are index-aligned: real[i] ↔ fake[i], equal lengths.
+
+version: 1
+fidelity: semantic          # semantic | loose | max  (doc/design/idea.md §3.2)
+# veil_canary: "..."        # inserted automatically by `veil persona import`; do not add or edit by hand
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A. YOU
+# ─────────────────────────────────────────────────────────────────────────────
+person:
+  first_name:    { real: "", fake: "" }
+  short_name:    { real: "", fake: "" }          # must differ from first_name's fake (no many-to-one)
+  last_name:     { real: "", fake: "" }
+  full_name:     { real: "", fake: "" }
+  middle_name:   { real: "", fake: "" }
+  nicknames:                                      # add as many as you use
+    - { real: "", fake: "" }
+  name_in_other_scripts:                          # other scripts / alternate spellings / common misspellings
+    - { real: "", fake: "" }
+  gender:        { real: "", fake: "" }           # real == fake is fine (treated as KEEP, I002)
+  pronouns:      { real: "", fake: "" }
+  date_of_birth: { real: "", fake: "", policy: SHIFT }   # DD/MM/YYYY; empty fake → shifted by numbers.date_shift_days
+  hometown:      { real: "", fake: "" }
+  hometown_aliases: { real: [], fake: [] }        # other spellings of the hometown, index-aligned
+  home_state:    { real: "", fake: "" }
+  current_city:  { real: "", fake: "", policy: KEEP }    # often needed for good answers
+  languages:     { real: "", policy: KEEP }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# B. CONTACT & ACCOUNTS
+# ─────────────────────────────────────────────────────────────────────────────
+emails:                         # institutional emails: the fake domain must match the fake institution domain (E017)
+  - { real: "", fake: "" }      # mirror the real pattern (dots, digits) in the fake
+
+phones:                         # any format; normalized to E.164
+  - { real: "", fake: "", policy: FPE }   # empty fake → generated (same prefix series)
+
+handles:                        # usernames on platforms
+  linux_user:  { real: "", fake: "" }
+  # Rule of thumb: apply the SAME derivation to the fake name that your real handle applies to your real name
+  # (e.g. jane_d for "Jane Doe" → alex_s for "Alex Smith").
+  github:      { real: "", fake: "" }
+  gitlab:      { real: "", fake: "" }
+  linkedin:    { real: "", fake: "" }           # the /in/<slug> part
+  twitter_x:   { real: "", fake: "" }
+  discord:     { real: "", fake: "" }
+  leetcode:    { real: "", fake: "" }
+  kaggle:      { real: "", fake: "" }
+  huggingface: { real: "", fake: "" }
+  google_scholar_id: { real: "", fake: "", policy: FPE }
+  orcid:       { real: "", fake: "", policy: FPE }   # checksum-valid when generated
+  personal_website: { real: "", fake: "" }
+  upi_ids:
+    - { real: "", fake: "" }    # keep the bank suffix (@okaxis/@ybl…) unless it's rare
+
+# ─────────────────────────────────────────────────────────────────────────────
+# C. EDUCATION & WORK  (quasi-identifiers: swap within the same tier/type)
+# ─────────────────────────────────────────────────────────────────────────────
+education:
+  - institution: { real: "", fake: "" }
+    aliases:     { real: [], fake: [] }          # abbreviations / long forms, index-aligned
+    domain:      { real: "", fake: "" }           # e.g. example.ac.in → other.ac.in
+    sub_domains: { real: [], fake: [] }
+    department:  { real: "", policy: KEEP }       # common enough to keep (pick a common fake if you swap)
+    lab:         { real: "", fake: "", aliases: { real: [], fake: [] } }   # lab names are distinctive → swap
+
+    # ── Academic profile: swapped as a SET (ADR-0010; doc/spec/v0.2-proxy.md §5.8) ──
+    # Degree and year are "class terms": matched only as identity PHRASES, never the bare token
+    # ("MS" alone stays, because of "500 ms", MS Word, Microsoft…). Opt-in via enabled: true.
+    degree:
+      enabled: false
+      real: ""                                    # e.g. MS
+      fake: ""                                    # e.g. PhD
+      phrases:                                    # identity phrases; real[i] ↔ fake[i]; every fake phrase UNIQUE
+        real: []                                  # e.g. ["MS student", "my MS", "MS thesis", "MS degree"]
+        fake: []                                  # e.g. ["PhD student", "my PhD", "PhD thesis", "PhD degree"]
+    year_of_study:
+      enabled: false
+      real: ""                                    # e.g. 2 (ordinal forms 2nd/second/II/2nd-year are generated)
+      fake: ""                                    # e.g. 3
+      context_required: true                      # only match near a degree/institution form
+    batch_year:  { real: "", fake: "" }           # ADMISSION year; must shift opposite to year_of_study (E018)
+    advisor:
+      real: ""                                    # full name as you write it
+      fake: ""                                    # a COMMON name, not a famous professor
+      title: { real: "", fake: "" }               # Prof. / Dr. (template material, not an identity)
+      forms:                                      # extra surface forms; Prof./Dr./"<surname> sir"/"<surname> ma'am" are generated
+        real: []                                  # e.g. initials, nickname, email local part
+        fake: []
+    research_area: { real: "", fake: "", policy: GENERALIZE, enabled: false }   # fake = the generic phrase; one-way
+    roll_number: { real: "", fake: "", policy: FPE }   # empty fake → generated, keeps the year/program prefix
+    hostel_room: { real: "", fake: "" }
+  - institution: { real: "", fake: "" }           # previous college, if any
+    aliases:     { real: [], fake: [] }
+    domain:      { real: "", fake: "" }
+    roll_number: { real: "", fake: "", policy: FPE }
+  - institution: { real: "", fake: "" }           # school (also a common security-question answer)
+    aliases:     { real: [], fake: [] }
+    board:       { real: "", policy: KEEP }       # a state board can reveal your state; swap it if your fake hometown is elsewhere
+
+work:
+  - employer:    { real: "", fake: "" }           # pick a company of the same tier as the real one
+    team:        { real: "", fake: "" }
+    manager:     { real: "", fake: "" }
+    employee_id: { real: "", fake: "", policy: FPE }
+    role:        { real: "", policy: KEEP }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D. PEOPLE AROUND YOU
+# ─────────────────────────────────────────────────────────────────────────────
+people:                         # family, friends, labmates, collaborators
+  # Family shares the fake surname (W102 checks father/mother/sibling; mother_maiden_name is a surname and is exempt).
+  # Match gender per person. Add one line per person you mention to an AI.
+  # ⚠ No fake may be the name of a REAL person in your life.
+  # relation: father | mother | mother_maiden_name | sibling | partner | friend | labmate | colleague | other
+  - { real: "", fake: "", relation: father }
+  - { real: "", fake: "", relation: mother }
+  - { real: "", fake: "", relation: mother_maiden_name }   # security-question answer
+  - { real: "", fake: "", relation: sibling }
+  - { real: "", fake: "", relation: partner }
+  - { real: "", fake: "", relation: friend }
+  - { real: "", fake: "", relation: labmate }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# E. MACHINES, INFRA & PATHS
+# ─────────────────────────────────────────────────────────────────────────────
+infra:
+  hostname:     { real: "", fake: "" }            # if equal to linux_user, use the same fake (merged automatically)
+  home_dir:     { real: "", fake: "" }            # e.g. /home/<user>; also derived automatically
+  clusters:
+    - { real: "", fake: "", contexts: [ssh, slurm, sbatch, cluster, hpc] }   # context guard keeps common words safe
+  cluster_usernames:
+    - { real: "", fake: "" }
+  slurm_accounts:
+    - { real: "", fake: "" }
+  wifi_ssids:
+    - { real: "", fake: "" }
+  ip_addresses: { policy: FPE }                   # prefix-preserving; nothing to fill in
+  mac_addresses: { policy: FPE }
+  private_repos:                                  # repo / project / folder names that identify you
+    - { real: "", fake: "" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F. GOVERNMENT & FINANCIAL IDs  (empty fakes are generated later: format- and checksum-valid)
+# ─────────────────────────────────────────────────────────────────────────────
+ids:
+  aadhaar:         { real: "", fake: "", policy: FPE }   # Verhoeff-valid
+  pan:             { real: "", fake: "", policy: FPE }   # 5th char will match the fake surname initial
+  passport:        { real: "", fake: "", policy: FPE }
+  voter_id:        { real: "", fake: "", policy: FPE }
+  driving_licence: { real: "", fake: "", policy: FPE }
+  bank_accounts:
+    - { real: "", fake: "", policy: FPE }
+  cards:                                          # last-4 is enough if you only ever paste that
+    - { real: "", fake: "", policy: FPE }         # Luhn-valid
+  ifsc:            { real: "", fake: "", policy: FPE }   # bank prefix preserved
+  address:
+    - { real: "", fake: "" }                      # full postal address
+  pin_codes:
+    - { real: "", fake: "" }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G. SOFT / PREFERENCE PII  (often security-question answers)
+#    Swap the identifying part, keep the functional part (SWAP_NAME_ONLY)
+# ─────────────────────────────────────────────────────────────────────────────
+attributes:
+  pets:
+    - { species: { real: "", fake: "" }, name: { real: "", fake: "" }, breed: { real: "", fake: "" }, policy: SWAP_NAME_ONLY }
+  first_pet_name:   { real: "", fake: "" }
+  first_school:     { real: "", fake: "" }        # if equal to an education entry, use the same fake (merged)
+  childhood_street: { real: "", fake: "" }
+  favourite_food:   { real: "", policy: KEEP }
+  favourite_sport_team: { real: "", policy: KEEP }
+  favourite_movie_book: { real: "", policy: KEEP }
+  hobbies:
+    - { real: "", policy: KEEP }
+  vehicle:          { real: "", fake: "" }        # keep the model; registration state code consistent with the fake hometown
+  custom:                                         # anything else that's "you"
+    - { category: "", real: "", fake: "", policy: SWAP }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# H. SPECIAL CATEGORIES  (ASK before sending: ADR-0012)
+#    veil pauses and asks Allow / Generalize / Deny. List each value as you would write it;
+#    `generalized` is what gets sent if you pick Generalize.
+# ─────────────────────────────────────────────────────────────────────────────
+sensitive:
+  default_policy: ASK
+  ask_timeout_seconds: 120      # timeout = Deny (1–600)
+  health:    { real: [], generalized: "", policy: ASK }   # each condition / medication you might mention
+  religion:  { real: [], generalized: "", policy: ASK }
+  caste:     { real: [], generalized: "", policy: ASK }
+  political: { real: [], generalized: "", policy: ASK }
+  sexuality: { real: [], generalized: "", policy: ASK }
+
+# ─────────────────────────────────────────────────────────────────────────────
+# I. PUBLIC FOOTPRINT  (distinctive strings a single web search would tie to you)
+#    Default policy GENERALIZE: fake = a generic description (e.g. "a paper on document OCR"); one-way.
+# ─────────────────────────────────────────────────────────────────────────────
+footprint:
+  paper_titles:
+    - { real: "", fake: "" }
+  thesis_title: { real: "", fake: "" }
+  public_repo_names:
+    - { real: "", fake: "" }
+  profile_urls_to_index: []     # later: veil indexes these locally and flags verbatim overlap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# J. NUMBERS & GLOBAL KNOBS
+# ─────────────────────────────────────────────────────────────────────────────
+numbers:
+  date_shift_days: 0            # applies to SHIFT dates with an empty fake
+
+never_translate:                # tokens that look like PII but must pass through
+  - Ada                         # programming language
+  - Turing                      # Alan Turing / Turing machine in normal prose
+
+never_reverse: []               # famous entities containing one of your FAKE forms: never reverse-translate
+                                # e.g. if your fake first name were "Ravi": ["Ravi Shastri", "Ravi Varma"]

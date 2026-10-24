@@ -1,0 +1,25 @@
+# Real personal data: never commit
+persona.yaml
+*.vault
+vault/
+*.age
+store.db
+captures/
+*.draft*
+
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.hypothesis/
+dist/
+build/
+*.egg-info/
+.claude/
+SPEC.md
+TODO-later.md
+CLAUDE.md
+
+doc/
