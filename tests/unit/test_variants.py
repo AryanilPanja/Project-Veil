@@ -54,7 +54,8 @@ class TestCaseLike:
             ("Jane", "alex", "Alex"),
             ("Jane Doe", "alex smith", "Alex Smith"),
             ("J", "alex", "Alex"),  # one capital letter: treated as Capitalised
-            ("jAnE", "Alex", "Alex"),  # unmappable mixed case: declared spelling
+            ("jAnE", "Alex", "aLeX"),  # equal length: case copied letter by letter
+            ("jAnE", "Alexander", "Alexander"),  # unmappable mixed case: declared spelling
             ("2021", "2019", "2019"),
             ("জেন", "অ্যালেক্স", "অ্যালেক্স"),  # no case in Bengali
             ("JANE-04", "alex-07", "ALEX-07"),
@@ -113,7 +114,7 @@ class TestExpandNames:
 
     def test_unknown_mixed_case_falls_back_safely(self):
         table = by_real(expand(entity(["Jane Doe"], ["Alex Smith"])))
-        assert table["jane doe"].fake_for("jAnE dOe") == "Alex Smith"
+        assert table["jane doe"].fake_for("jAnE dOeX") == "Alex Smith"
 
     def test_three_word_real_two_word_fake(self):
         table = by_real(expand(entity(["Jane Mary Doe"], ["Alex Smith"])))
