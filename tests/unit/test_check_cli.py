@@ -98,9 +98,10 @@ def test_too_large_file(tmp_path, capsys, monkeypatch):
     assert "too large" in capsys.readouterr().err
 
 
-def test_no_file_is_a_usage_error(capsys):
-    assert cli.main(["persona", "check"]) == ExitCode.USAGE
-    assert "--file" in capsys.readouterr().err
+def test_no_file_checks_the_store_which_does_not_exist_yet(veil_home, capsys):
+    assert cli.main(["persona", "check"]) == ExitCode.KEY_UNAVAILABLE
+    assert "no key has been set up" in capsys.readouterr().err
+    assert veil_home.ring.calls == []
 
 
 def test_persona_without_subcommand_shows_help(capsys):

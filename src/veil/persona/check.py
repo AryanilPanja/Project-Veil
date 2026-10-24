@@ -4,7 +4,9 @@ Agent-safe by design: output holds codes, field paths and counts, never values, 
 file path either (it may contain the user's name).
 """
 
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from veil import ui
 from veil.errors import PersonaFormatError, VeilError
@@ -14,11 +16,31 @@ from veil.persona.schema import PersonaSchemaError, parse_persona
 from veil.persona.validate import validate
 from veil.persona.yamlio import MAX_BYTES, load_yaml
 
+if TYPE_CHECKING:
+    from veil.crypto.keystore import KeyStore
+    from veil.persona.store import PersonaStore
+
 FILE = "<file>"
 
 
 def check_file(path: Path, *, strict: bool = False, fmt: str = "text") -> int:
-    report = check_bytes(_read(path))
+    return _emit(check_bytes(read_source(path)), strict=strict, fmt=fmt)
+
+
+def check_store(
+    keystore: "KeyStore",
+    store: "PersonaStore",
+    *,
+    ask_passphrase: Callable[[], str] | None,
+    strict: bool = False,
+    fmt: str = "text",
+) -> int:
+    """Check the encrypted persona (decrypted in memory only)."""
+    identity = keystore.load(ask_passphrase)
+    return _emit(check_bytes(store.load(identity).data), strict=strict, fmt=fmt)
+
+
+def _emit(report: Report, *, strict: bool, fmt: str) -> int:
     ui.out(render_json(report) if fmt == "json" else render_text(report))
     return int(ExitCode.FINDINGS if report.failed(strict=strict) else ExitCode.OK)
 
@@ -38,7 +60,7 @@ def check_bytes(data: bytes) -> Report:
     return validate(persona)
 
 
-def _read(path: Path) -> bytes:
+def read_source(path: Path) -> bytes:
     try:
         if path.stat().st_size > MAX_BYTES:
             raise VeilError("the persona file is too large", exit_code=ExitCode.USAGE)

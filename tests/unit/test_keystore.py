@@ -1,6 +1,5 @@
 """crypto/keystore.py: keyring and passphrase identity storage. Never touches the real keyring."""
 
-import hashlib
 import stat
 import threading
 import time
@@ -25,30 +24,8 @@ PASS = "correct horse battery"
 
 
 @pytest.fixture(autouse=True)
-def fast_scrypt(monkeypatch):
-    """Replace age scrypt (~1.5 s per call) with a fast stand-in that keeps the same contract."""
-
-    def tag(passphrase: str) -> bytes:
-        return hashlib.sha256(passphrase.encode()).digest()
-
-    def encrypt(plaintext: bytes, passphrase: str) -> bytes:
-        age.check_passphrase(passphrase)
-        return (
-            age.AGE_MAGIC + b"FAKE-SCRYPT " + tag(passphrase) + bytes(b ^ 0x5A for b in plaintext)
-        )
-
-    def decrypt(ciphertext: bytes, passphrase: str) -> bytes:
-        prefix = age.AGE_MAGIC + b"FAKE-SCRYPT "
-        if not ciphertext.startswith(prefix) or ciphertext[len(prefix) : len(prefix) + 32] != tag(
-            passphrase
-        ):
-            raise DecryptFailed(
-                "could not decrypt the key file: wrong passphrase, or it is corrupt"
-            )
-        return bytes(b ^ 0x5A for b in ciphertext[len(prefix) + 32 :])
-
-    monkeypatch.setattr(age, "passphrase_encrypt", encrypt)
-    monkeypatch.setattr(age, "passphrase_decrypt", decrypt)
+def _fast(fast_scrypt):
+    """Real age scrypt costs ~1.5 s per call; see `fast_scrypt` in conftest."""
 
 
 @pytest.fixture
