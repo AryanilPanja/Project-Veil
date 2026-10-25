@@ -338,3 +338,56 @@ def on_timer(event: str, config: Path, timers: Timers, now: datetime) -> Message
     if event == "remind":
         return reminder_message(switch, now)
     return None  # an early or stale expiry timer: the switch decides, not the timer
+
+
+# ── switching off from the hotkey (M3.2): a click in a notification, not a terminal ───
+
+CONFIRM_SECONDS = 30
+HOTKEY_DEFAULT_FOR = timedelta(minutes=30)
+
+# (message, buttons, timeout in s) → the clicked button's name, or None (no answer)
+Chooser = Callable[[Message, Sequence[tuple[str, str]], int], str | None]
+
+
+def confirm_buttons(duration: timedelta | None) -> list[tuple[str, str]]:
+    if duration is not None:
+        return [("off", f"Off for {describe_duration(duration)}"), ("keep", "Keep ON")]
+    return [
+        ("off-default", f"Off for {describe_duration(HOTKEY_DEFAULT_FOR)}"),
+        ("off", "Off until `veil on`"),
+        ("keep", "Keep ON"),
+    ]
+
+
+def confirm_message() -> Message:
+    return Message(
+        "Switch veil OFF?",
+        "Asked by the kill-switch hotkey. While OFF, clipboard hotkeys don't sanitize copied "
+        f"text.\nNo answer in {CONFIRM_SECONDS} s = veil stays ON.",
+        Urgency.CRITICAL,
+        icon="dialog-question",
+    )
+
+
+def confirm_by_notification(
+    choose: Chooser | None, duration: timedelta | None
+) -> tuple[bool, timedelta | None]:
+    """Ask with buttons; only a click on an Off button confirms. Returns (confirmed, duration).
+    Every way of not answering (no notify-send, timeout, closed, odd reply) keeps veil ON."""
+    if choose is None:
+        return False, None
+    reply = choose(confirm_message(), confirm_buttons(duration), CONFIRM_SECONDS)
+    if reply == "off-default" and duration is None:
+        return True, HOTKEY_DEFAULT_FOR
+    if reply == "off":
+        return True, duration
+    return False, None
+
+
+def detect_chooser(which: Callable[[str], str | None] = shutil.which) -> Chooser | None:
+    path = which("notify-send")
+    if path is None:
+        return None
+    from veil.clip import notify
+
+    return lambda message, actions, timeout: notify.choose(path, message, actions, timeout)
