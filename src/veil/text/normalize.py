@@ -9,6 +9,7 @@ copy-paste, to dodge a match. Kept: zero-width joiner and non-joiner (U+200D/U+2
 meaning in Bengali and Devanagari.
 """
 
+import functools
 import unicodedata
 
 KEPT_FORMAT_CHARS = frozenset({chr(0x200C), chr(0x200D)})
@@ -57,6 +58,9 @@ def fold_with_map(text: str) -> tuple[str, list[int]]:
     return "".join(out), origin
 
 
+@functools.lru_cache(maxsize=65536)
 def canon(text: str) -> str:
+    """Cached: the engine canonicalizes the same few thousand forms over and over. Pure, so
+    caching can't change a result. The cache lives only in this process's memory."""
     folded, _ = fold_with_map(nfkc(text))
     return folded.strip(" ")
