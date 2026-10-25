@@ -227,16 +227,16 @@ class TestRestore:
         assert outcome.total == 0
 
     @pytest.mark.parametrize(
-        "text", ["doeJane", "Doe jane", "JANE.doe", "JaneDOE", "Jane\nDoe", "jane\t doe"]
+        "text",
+        ["doeJane", "Doe jane", "JANE.doe", "JaneDOE", "Jane\nDoe", "jane\t doe", "Jane\xa0Doe"],
     )
-    def test_known_case_loss_keeps_the_letters(self, engine, text):
-        # Board Q15: these come back with another case. The letters must still be right, and
-        # the sanitized side must hold no real form.
+    def test_case_and_whitespace_round_trip_exactly(self, engine, text):
+        # Board Q15 (fixed): per-word case and whitespace inside a match come back exactly.
         board = FakeBoard.with_text(text)
         commands.sanitize(board, Loader(engine))
         assert_no_reals(board.text())
         commands.restore(board, Loader(engine))
-        assert board.text().lower().split() == text.lower().split()
+        assert board.text() == text
 
     @pytest.mark.parametrize(
         ("offer", "skip"),
@@ -259,21 +259,25 @@ class TestRestore:
         max_size=25,
     )
 
-    @given(PARTS, st.sampled_from([str.lower, str.upper]), st.sampled_from([" ", ", "]))
-    def test_property_round_trip_exact_for_consistent_case(self, engine, parts, case, sep):
-        # Not "\n": a name across a line break comes back with a space (board Q15).
-        text = sep.join(case(p) for p in parts)
+    @given(
+        PARTS,
+        st.lists(st.sampled_from([str.lower, str.upper, str.capitalize, str]), min_size=25),
+        st.sampled_from([" ", ", ", "\n", "\t", "\xa0", " \r\n"]),
+    )
+    def test_property_round_trip_exact(self, engine, parts, cases, sep):
+        # Any case per part, any whitespace between parts (spec §4.3, board Q15).
+        text = sep.join(case(p) for p, case in zip(parts, cases, strict=False))
         assume(not engine.ambiguous(text))  # no fake forms in the input (spec §4.3)
         board = FakeBoard.with_text(text)
         commands.sanitize(board, Loader(engine))
         commands.restore(board, Loader(engine))
         assert board.text() == text
 
-    @given(PARTS, st.sampled_from([" ", ", ", ""]))
-    def test_property_round_trip_keeps_letters_for_any_case(self, engine, parts, sep):
-        # Mixed-case spellings the engine can't case-map ("Doe jane", "doeJane") may come back
-        # in another case (board Q15); the letters always come back.
-        text = sep.join(parts)
+    @given(PARTS)
+    def test_property_round_trip_keeps_letters_when_glued(self, engine, parts):
+        # Glued parts with no visible word boundary ("JANEdoe") can come back in another case;
+        # the letters always come back.
+        text = "".join(parts)
         assume(not engine.ambiguous(text))
         board = FakeBoard.with_text(text)
         commands.sanitize(board, Loader(engine))

@@ -20,7 +20,7 @@ import unicodedata
 from dataclasses import dataclass
 
 from veil.engine.context import Distances, context_near, overlaps_any
-from veil.engine.forms import Form, Lexicon
+from veil.engine.forms import Form, Lexicon, raw_whitespace
 from veil.text.aho import PatternIndex
 from veil.text.containment import PreparedText
 
@@ -133,6 +133,8 @@ class Matcher:
             raw_span = mapped.to_raw(hit.start, hit.end)
             if raw_span is None:  # filtered above; kept as a guard
                 continue
+            # NFKC turns a no-break space into a space: give the raw whitespace back first.
+            found = raw_whitespace(found, raw[raw_span[0] : raw_span[1]])
             chosen.append(RawMatch(raw_span[0], raw_span[1], form, form.variant.fake_for(found)))
             cursor = hit.end
         return chosen
