@@ -266,6 +266,7 @@ name = "project-veil"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "jeepney" },
     { name = "pyahocorasick" },
     { name = "pydantic" },
     { name = "pyrage" },
@@ -282,6 +283,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "jeepney", specifier = ">=0.8,<1" },
     { name = "pyahocorasick", specifier = ">=2.1" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pyrage", specifier = ">=1.4,<2" },

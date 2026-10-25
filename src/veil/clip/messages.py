@@ -12,6 +12,7 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 
 from veil.clip.ask import Decision, describe
 from veil.clip.commands import Action, Outcome, Scrub, Skip
+from veil.clip.history import Forget
 from veil.clip.notify import Message, Urgency
 from veil.errors import VeilError
 
@@ -39,6 +40,21 @@ LABELS = {
 }
 
 
+# Removing the original from the clipboard history (M2.6). Silent when there is nothing to do.
+HISTORY_LINES = {
+    Forget.REMOVED: "veil: original removed from the clipboard history (Klipper)",
+    Forget.PARTIAL: "veil: original removed from the clipboard history (Klipper); "
+    "some older entries could not be put back",
+    Forget.FAILED: "veil: warning: the original may still be in the clipboard history (Klipper); "
+    "clear it there before pasting from the history",
+}
+HISTORY_NOTES = {
+    Forget.REMOVED: "Original removed from Klipper's history.",
+    Forget.PARTIAL: "Original removed from Klipper's history (some older entries lost).",
+    Forget.FAILED: "Warning: the original may still be in Klipper's history.",
+}
+
+
 def categories(replaced: dict[str, int]) -> str:
     """ "name 3, email 1": by count (largest first), then label."""
     labelled: dict[str, int] = {}
@@ -54,6 +70,9 @@ def stderr_lines(outcome: Outcome) -> list[str]:
     sensitive = _sensitive_note(outcome)
     if sensitive:
         lines.append(f"veil: {sensitive[:1].lower()}{sensitive[1:]}")
+    history = HISTORY_LINES.get(outcome.history)
+    if history:
+        lines.append(history)
     if outcome.preexisting_fakes:
         lines.append(
             f"veil: warning: the text already contained {outcome.preexisting_fakes} fake "
@@ -85,6 +104,9 @@ def notification(outcome: Outcome) -> Message:
     if sensitive:
         body.append(sensitive)
     body.append("Plain text only. Ready to paste.")
+    history = HISTORY_NOTES.get(outcome.history)
+    if history:
+        body.append(history)
     if outcome.preexisting_fakes:
         body.append(
             f"Note: {outcome.preexisting_fakes} fake form(s) were already in the text; "

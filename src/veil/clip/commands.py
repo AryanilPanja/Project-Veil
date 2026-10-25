@@ -21,6 +21,9 @@ terms with policy GENERALIZE are always replaced by their phrase; ASK terms trig
 - Allow: sent as is; Generalize: replaced by the phrase; Deny (or no answer): clipboard cleared.
 Generalizing happens before translation, so the phrase is translated like any other text.
 
+After a successful write, the original is removed from KDE's clipboard history (M2.6,
+`history.py`); best effort, reported in the Outcome, never an error.
+
 The result is computed in full before anything is written. Errors propagate to the caller,
 which runs `fail_closed` for sanitize and from-selection (M2.5, spec §4.4): the clipboard may
 still hold the real text the user believes is about to be sanitized. Restore errors leave the
@@ -32,6 +35,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from veil.clip.ask import Asker, Decision, deny_all
+from veil.clip.history import Forget, Forgetter
 from veil.clip.io import Clipboard, Kind, Selection
 from veil.engine.matcher import Engine, RawMatch
 from veil.persona.policy import Policy
@@ -71,6 +75,7 @@ class Outcome:
     asked: dict[str, int] = field(default_factory=dict)  # ASK category → count
     decision: Decision | None = None  # set when the user was asked
     generalized: int = 0  # spans replaced by their generalized phrase
+    history: Forget | None = None  # removing the original from the clipboard history (M2.6)
 
     @property
     def changed(self) -> bool:
@@ -89,12 +94,16 @@ class Scrub(Enum):
     FAILED = "failed"  # the original may still be on the clipboard
 
 
-def sanitize(board: Clipboard, load: EngineLoader, ask: Asker = deny_all) -> Outcome:
-    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE, ask)
+def sanitize(
+    board: Clipboard, load: EngineLoader, ask: Asker = deny_all, forget: Forgetter | None = None
+) -> Outcome:
+    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE, ask, forget)
 
 
-def from_selection(board: Clipboard, load: EngineLoader, ask: Asker = deny_all) -> Outcome:
-    return _forward(board, load, Selection.PRIMARY, Action.FROM_SELECTION, ask)
+def from_selection(
+    board: Clipboard, load: EngineLoader, ask: Asker = deny_all, forget: Forgetter | None = None
+) -> Outcome:
+    return _forward(board, load, Selection.PRIMARY, Action.FROM_SELECTION, ask, forget)
 
 
 def restore(board: Clipboard, load: EngineLoader) -> Outcome:
@@ -111,7 +120,12 @@ def restore(board: Clipboard, load: EngineLoader) -> Outcome:
 
 
 def _forward(
-    board: Clipboard, load: EngineLoader, source: Selection, action: Action, ask: Asker
+    board: Clipboard,
+    load: EngineLoader,
+    source: Selection,
+    action: Action,
+    ask: Asker,
+    forget: Forgetter | None,
 ) -> Outcome:
     content = board.read(source)
     STAGES.mark("read")
@@ -143,6 +157,10 @@ def _forward(
     STAGES.mark("translate")
     board.write_text(out)  # always CLIPBOARD, plain text only
     STAGES.mark("write")
+    history = None
+    if forget is not None:
+        history = forget(content.text or "", lambda: board.write_text(out))
+        STAGES.mark("history")
     return Outcome(
         action,
         replaced=counts,
@@ -150,6 +168,7 @@ def _forward(
         asked=asked,
         decision=decision,
         generalized=len(to_generalize),
+        history=history,
     )
 
 

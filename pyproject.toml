@@ -14,6 +14,7 @@ dependencies = [
     "pyrage>=1.4,<2",
     "pyahocorasick>=2.1",
     "secretstorage>=3.3",
+    "jeepney>=0.8,<1",
 ]
 
 [project.scripts]
