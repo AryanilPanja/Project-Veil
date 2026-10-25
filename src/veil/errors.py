@@ -68,3 +68,9 @@ class Aborted(VeilError):
 
 class StorageError(VeilError):
     exit_code = ExitCode.STORAGE
+
+
+class ClipboardError(VeilError):
+    """The clipboard can't be read or written: no tool or display, a tool failed or timed out."""
+
+    exit_code = ExitCode.CLIPBOARD

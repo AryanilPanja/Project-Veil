@@ -14,6 +14,7 @@ ADR_0027_TABLE = {
     "UNSAFE_ENVIRONMENT": 7,
     "ABORTED": 8,
     "STORAGE": 9,
+    "CLIPBOARD": 10,
     "INTERNAL": 70,
     "INTERRUPTED": 130,
 }
