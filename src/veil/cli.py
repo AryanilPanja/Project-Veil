@@ -67,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     for cmd in (off, toggle):
         cmd.add_argument(
+            "--from-hotkey",
+            action="store_true",
+            help="confirm with a notification button instead of the terminal (for the "
+            "kill-switch hotkey); no click within 30 s = veil stays ON",
+        )
+        cmd.add_argument(
             "--for",
             dest="duration",
             type=_duration,
@@ -311,11 +317,22 @@ def _switch_command(args: argparse.Namespace) -> int:
         if was_off:
             notify.detect().notify(killswitch.on_message())
         return int(ExitCode.OK)
-    if not ui.confirm_typed(
+    duration = args.duration
+    if args.from_hotkey:
+        # A click in a notification: a person at the desktop (ADR-0018). An agent running this
+        # only pops up the question; it can't click it.
+        choose = killswitch.detect_chooser()
+        if choose is None:
+            raise Aborted("can't ask for confirmation (notify-send is missing); veil stays ON")
+        confirmed, duration = killswitch.confirm_by_notification(choose, duration)
+        if not confirmed:
+            raise Aborted("not switched off (no Off button clicked); veil stays ON")
+        now = killswitch.utc_now()  # the question may have waited up to 30 s
+    elif not ui.confirm_typed(
         "Switch veil OFF? Clipboard hotkeys will stop sanitizing copied text.", "off"
     ):
         raise Aborted("not switched off (confirmation not given); veil stays ON")
-    switch, scheduled = killswitch.switch_off(config, timers, now, args.duration)
+    switch, scheduled = killswitch.switch_off(config, timers, now, duration)
     ui.out(killswitch.status_line(killswitch.Reading(switch), now))
     if not scheduled:
         ui.err(

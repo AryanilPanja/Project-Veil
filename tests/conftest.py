@@ -153,6 +153,29 @@ def switch_timers(monkeypatch):
     return recorder
 
 
+class ScriptedChooser:
+    """Stands in for the kill-switch hotkey's confirmation notification. `reply` is the button
+    "clicked" (default None: no answer, so veil stays ON); `asked` records each question."""
+
+    def __init__(self) -> None:
+        self.reply = None
+        self.asked: list = []
+
+    def __call__(self, message, actions, timeout):
+        self.asked.append((message, list(actions), timeout))
+        return self.reply
+
+
+@pytest.fixture(autouse=True)
+def switch_chooser(monkeypatch):
+    """No test may pop up a real kill-switch confirmation."""
+    from veil import killswitch
+
+    scripted = ScriptedChooser()
+    monkeypatch.setattr(killswitch, "detect_chooser", lambda *a, **k: scripted)
+    return scripted
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""

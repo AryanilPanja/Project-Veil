@@ -16,9 +16,9 @@ from tests.unit.test_clip_commands import REAL, Loader, run
 from tests.unit.test_matcher import FIXTURE, lexicon_from
 from tests.unit.test_textcmd import imported  # noqa: F401 - pytest fixture
 from veil import ui
-from veil.clip import ask as askmod
 from veil.clip import commands, messages
 from veil.clip import io as clipio
+from veil.clip import notify as notifymod
 from veil.clip.ask import ACTIONS, Decision, NotifyAsker, TerminalAsker, deny_all, prompt_message
 from veil.clip.ask import detect as real_detect  # bound before conftest patches it
 from veil.clip.commands import WAITING_PLACEHOLDER, Action, Outcome, Skip
@@ -450,7 +450,7 @@ class TestNotifyAsker:
     def test_waits_the_timeout_plus_grace(self):
         capture = Capture(b"deny\n")
         NotifyAsker("/n", capture=capture)({"h": 1}, 30)
-        assert capture.calls[0][1] == 30 + askmod.GRACE_SECONDS
+        assert capture.calls[0][1] == 30 + notifymod.GRACE_SECONDS
 
     def test_real_process_answer(self, tmp_path):
         script = tmp_path / "fake-notify-send"
@@ -459,7 +459,7 @@ class TestNotifyAsker:
         assert NotifyAsker(str(script))({"health": 1}, 5) is Decision.GENERALIZE
 
     def test_real_process_that_never_answers_is_denied(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(askmod, "GRACE_SECONDS", 0)
+        monkeypatch.setattr(notifymod, "GRACE_SECONDS", 0)
         script = tmp_path / "fake-notify-send"
         script.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
         script.chmod(0o700)

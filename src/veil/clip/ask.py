@@ -15,9 +15,8 @@ from collections.abc import Callable
 from enum import StrEnum
 
 from veil import ui
-from veil.clip import proc
-from veil.clip.notify import APP_NAME, Message, Urgency
-from veil.errors import VeilError
+from veil.clip import notify, proc
+from veil.clip.notify import Message, Urgency
 
 
 class Decision(StrEnum):
@@ -34,7 +33,7 @@ ACTIONS = (
     (Decision.GENERALIZE, "Generalize"),
     (Decision.DENY, "Deny"),
 )
-GRACE_SECONDS = 2  # notify-send gets this long after the timeout before it is killed
+_BUTTONS = [(decision.value, label) for decision, label in ACTIONS]
 
 
 def describe(categories: dict[str, int]) -> str:
@@ -58,31 +57,19 @@ class NotifyAsker:
         self._capture = capture
 
     def argv(self, categories: dict[str, int], timeout: int) -> list[str]:
-        message = prompt_message(categories, timeout)
-        return [
-            self._path,
-            f"--app-name={APP_NAME}",
-            f"--urgency={message.urgency.value}",
-            f"--icon={message.icon}",
-            "--transient",
-            "--wait",
-            f"--expire-time={timeout * 1000}",
-            *(f"--action={decision.value}={label}" for decision, label in ACTIONS),
-            "--",
-            message.summary,
-            message.body,
-        ]
+        return notify.choice_argv(
+            self._path, prompt_message(categories, timeout), _BUTTONS, timeout
+        )
 
     def __call__(self, categories: dict[str, int], timeout: int) -> Decision:
-        try:
-            result = self._capture(
-                self.argv(categories, timeout), timeout=timeout + GRACE_SECONDS, limit=256
-            )
-        except VeilError:  # could not start, timed out, odd output: no answer
-            return Decision.DENY
-        if result.returncode != 0:
-            return Decision.DENY
-        return _parse(result.stdout)
+        reply = notify.choose(
+            self._path,
+            prompt_message(categories, timeout),
+            _BUTTONS,
+            timeout,
+            capture=self._capture,
+        )
+        return Decision.DENY if reply is None else Decision(reply)
 
 
 class TerminalAsker:
@@ -104,14 +91,3 @@ def deny_all(categories: dict[str, int], timeout: int) -> Decision:
 def detect(which: Callable[[str], str | None] = shutil.which) -> Asker:
     path = which("notify-send")
     return NotifyAsker(path) if path else deny_all
-
-
-def _parse(stdout: bytes) -> Decision:
-    try:
-        reply = stdout.decode("ascii").strip()
-    except UnicodeDecodeError:
-        return Decision.DENY
-    for decision, _ in ACTIONS:
-        if reply == decision.value:
-            return decision
-    return Decision.DENY
