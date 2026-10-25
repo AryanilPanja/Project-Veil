@@ -122,7 +122,8 @@ class TestRawPreservation:
         assert engine.forward(text) == f"a{ZWSP}b Alex c{SHY}d"
 
     def test_crlf_and_tabs_kept(self, engine):
-        assert engine.forward("Jane\r\n\tDoe") == "Alex Smith"  # whitespace run = one match
+        # One match across the whitespace run, which is kept inside the fake (board Q15).
+        assert engine.forward("Jane\r\n\tDoe") == "Alex\r\n\tSmith"
         assert engine.forward("x\r\n\ty") == "x\r\n\ty"
 
     def test_fullwidth_match_is_replaced_whole(self, engine):
