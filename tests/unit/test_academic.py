@@ -212,7 +212,9 @@ class TestContextHelper:
         assert window_of(entity) == academic.YEAR_WINDOW
         plain = next(f.entity for f in lex.forward if not f.entity.contexts)
         assert window_of(plain) == DEFAULT_WINDOW
-        assert context_near("anything", 0, 3, plain)
+        from veil.text.containment import PreparedText
+
+        assert context_near(PreparedText("anything"), 0, 3, plain, None, {})
 
 
 # ── ambiguity and the full round trip ─────────────────────────────────────────
@@ -318,3 +320,43 @@ class TestAcademicProfile:
         flat = flatten(parse_persona(load_yaml(FIXTURE.read_bytes())))
         assert "XYZ" not in repr(flat.academic[0])
         assert "MS" not in repr(flat.academic[0])
+
+
+class TestUnitDistances:
+    def test_plain_text_counts_characters(self):
+        from veil.engine.context import Distances
+
+        d = Distances(20, [])
+        assert d.gap((0, 4), (10, 12)) == 6
+        assert d.gap((10, 12), (0, 4)) == 6
+        assert d.gap((0, 4), (4, 6)) == 0
+        assert d.gap((0, 5), (3, 8)) == 0
+
+    def test_a_replaced_span_counts_one_unit_whatever_its_length(self):
+        from veil.engine.context import Distances
+
+        short = Distances(30, [(10, 12)])
+        long = Distances(40, [(10, 22)])
+        # From the end of [0,4) to a keyword right after the span: 6 chars + 1 unit.
+        assert short.gap((0, 4), (12, 14)) == 7
+        assert long.gap((0, 4), (22, 24)) == 7
+
+    def test_several_spans(self):
+        from veil.engine.context import Distances
+
+        d = Distances(50, [(5, 9), (12, 30)])
+        assert d.gap((0, 2), (40, 42)) == 3 + 1 + 3 + 1 + 10
+
+    def test_regression_round_trip_across_length_changing_names(self, engine):
+        """Found by the round-trip property: three JANE DOE → ALEX SMITH replacements between
+        "2nd year" and "MS thesis" used to push the keyword out of a *character* window in
+        reverse only."""
+        text = "2nd year Jane Jane JANE DOE JANE DOE JANE DOE MS thesis "
+        out = engine.forward(text)
+        assert out.startswith("3rd year")
+        assert engine.reverse(out) == text
+
+    @pytest.mark.parametrize("names", [0, 1, 3, 6, 10])
+    def test_window_is_symmetric_for_any_number_of_replacements(self, engine, names):
+        text = "2nd year " + "JANE DOE " * names + "MS thesis"
+        assert engine.reverse(engine.forward(text)) == text

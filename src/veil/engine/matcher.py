@@ -19,8 +19,8 @@ of "ﬁ") is rejected, so veil never edits half of a character.
 import unicodedata
 from dataclasses import dataclass
 
-from veil.engine.context import context_near, overlaps_any
-from veil.engine.lexicon import Form, Lexicon
+from veil.engine.context import Distances, context_near, overlaps_any
+from veil.engine.forms import Form, Lexicon
 from veil.text.aho import PatternIndex
 from veil.text.containment import PreparedText
 
@@ -39,13 +39,20 @@ class RawMatch:
 class Mapped:
     """The raw text, its cluster-wise NFKC form, and the map between them."""
 
-    __slots__ = ("cluster_of", "clusters", "prepared", "raw")
+    __slots__ = ("cluster_of", "clusters", "identity", "prepared", "raw")
 
     def __init__(self, raw: str) -> None:
         self.raw = raw
         self.clusters: list[tuple[int, int, int, int]] = []  # raw start, raw end, norm start, end
+        self.cluster_of: list[int] = []
+        self.identity = raw.isascii() or unicodedata.is_normalized("NFKC", raw)
+        if self.identity:
+            # Fast path: the text is already NFKC (always true for ASCII), so normalized and raw
+            # offsets are the same. Clusters only matter for the never-split-a-character rule,
+            # which to_raw checks directly (a span must not start on, or be followed by, a mark).
+            self.prepared = PreparedText.from_normalized(raw)
+            return
         pieces: list[str] = []
-        self.cluster_of: list[int] = []  # normalized index → cluster index
         norm_len = 0
         for raw_start, raw_end in _clusters(raw):
             piece = unicodedata.normalize("NFKC", raw[raw_start:raw_end])
@@ -63,6 +70,13 @@ class Mapped:
         """Raw span for normalized [start, end), or None if it splits a cluster."""
         if start >= end:
             return None
+        if self.identity:
+            raw = self.raw
+            if unicodedata.combining(raw[start]) or (
+                end < len(raw) and unicodedata.combining(raw[end])
+            ):
+                return None  # would split a base character from its combining marks
+            return start, end
         first, last = self.cluster_of[start], self.cluster_of[end - 1]
         if self.clusters[first][2] != start or self.clusters[last][3] != end:
             return None
@@ -91,19 +105,33 @@ class Matcher:
         hits = self._index.find(mapped.prepared)
         protected = [(h.start, h.end) for h in self._protected.find(mapped.prepared)]
         hits.sort(key=lambda h: (h.start, -(h.end - h.start), h.pattern))
+        usable = [
+            h
+            for h in hits
+            if not overlaps_any(h.start, h.end, protected)  # never_translate / never_reverse
+            and mapped.to_raw(h.start, h.end) is not None  # never split a character
+        ]
+        distances = None
+        if use_context and any(self.forms[h.pattern].entity.contexts for h in usable):
+            # Unit distances over the spans the unguarded forms replace (context.py).
+            distances = Distances(
+                len(text),
+                _greedy(h for h in usable if not self.forms[h.pattern].entity.contexts),
+            )
+        keyword_spans: dict[str, list] = {}
         chosen: list[RawMatch] = []
         cursor = 0
-        for hit in hits:
+        for hit in usable:
             if hit.start < cursor:
                 continue
             found = text[hit.start : hit.end]
             form = self.forms[hit.pattern]
-            if overlaps_any(hit.start, hit.end, protected):
-                continue  # inside a never_translate / never_reverse phrase
-            if use_context and not context_near(text, hit.start, hit.end, form.entity):
+            if use_context and not context_near(
+                mapped.prepared, hit.start, hit.end, form.entity, distances, keyword_spans
+            ):
                 continue
             raw_span = mapped.to_raw(hit.start, hit.end)
-            if raw_span is None:
+            if raw_span is None:  # filtered above; kept as a guard
                 continue
             chosen.append(RawMatch(raw_span[0], raw_span[1], form, form.variant.fake_for(found)))
             cursor = hit.end
@@ -186,3 +214,14 @@ def _clusters(raw: str) -> list[tuple[int, int]]:
             spans.append((start, i))
             start = i
     return spans if raw else []
+
+
+def _greedy(hits) -> list[tuple[int, int]]:
+    """Leftmost-longest selection of (start, end) spans from sorted hits."""
+    spans: list[tuple[int, int]] = []
+    cursor = 0
+    for hit in hits:
+        if hit.start >= cursor:
+            spans.append((hit.start, hit.end))
+            cursor = hit.end
+    return spans

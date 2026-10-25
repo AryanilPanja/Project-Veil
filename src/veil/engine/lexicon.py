@@ -10,37 +10,17 @@ engine refuses to start (`veil persona check` shows the same findings by field p
 """
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from veil.engine.academic import class_term_forms
 from veil.engine.compose import derived_entities
-from veil.engine.variants import ExpandedEntity, Variant, expand_all, validate_expanded
+from veil.engine.forms import Form, Lexicon, Variant
+from veil.engine.variants import ExpandedEntity, expand_all, validate_expanded
 from veil.errors import ValidationFailed
-from veil.persona.entities import Entity, FlatPersona
+from veil.persona.entities import FlatPersona
 from veil.persona.walk import EntityKind
 from veil.text.normalize import canon
 
-
-@dataclass(frozen=True, slots=True)
-class Form:
-    """One matchable form in one direction: `match` is searched, `variant.fake_for` produces."""
-
-    variant: Variant
-    entity: Entity
-
-    def __repr__(self) -> str:
-        return f"Form(entity={self.entity.id!r}, origin={self.variant.origin})"
-
-
-@dataclass(frozen=True)
-class Lexicon:
-    forward: tuple[Form, ...]  # real → fake
-    reverse: tuple[Form, ...]  # fake → real (reversible entities only)
-    never_translate: frozenset[str]  # canon forms
-    never_reverse: frozenset[str]  # canon forms
-
-    def __repr__(self) -> str:
-        return f"Lexicon(forward={len(self.forward)}, reverse={len(self.reverse)})"
+__all__ = ["Form", "Lexicon", "build_lexicon"]
 
 
 def build_lexicon(flat: FlatPersona) -> Lexicon:

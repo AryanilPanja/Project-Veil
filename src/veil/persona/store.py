@@ -15,7 +15,7 @@ from veil import fsutil
 from veil.crypto import age
 from veil.errors import DecryptFailed, KeyUnavailable, StorageError
 from veil.persona import canary
-from veil.persona.yamlio import MAX_BYTES
+from veil.persona.limits import MAX_BYTES
 
 STORE_FILE = "persona.age"
 LOCK_FILE = "persona.lock"

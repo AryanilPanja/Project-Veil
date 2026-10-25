@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import ahocorasick
 
 from veil.text.boundary import is_bounded
-from veil.text.containment import PreparedText, to_original
+from veil.text.containment import PreparedText, prepared, to_original
 from veil.text.normalize import canon
 
 
@@ -52,7 +52,7 @@ class PatternIndex:
         """All bounded hits, sorted by (start, end, pattern)."""
         if self._automaton is None:
             return []
-        hay = text if isinstance(text, PreparedText) else PreparedText(text)
+        hay = text if isinstance(text, PreparedText) else prepared(text)
         if not hay.folded:
             return []
         hits: list[Hit] = []
