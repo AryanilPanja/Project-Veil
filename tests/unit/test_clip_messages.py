@@ -13,7 +13,7 @@ from tests.unit.test_clip_commands import FAKES, REAL, REALS, run
 from tests.unit.test_textcmd import imported  # noqa: F401 - pytest fixture
 from veil.clip import io as clipio
 from veil.clip import messages
-from veil.clip.commands import Action, Outcome, Skip
+from veil.clip.commands import Action, Outcome, Scrub, Skip
 from veil.clip.io import Selection
 from veil.clip.notify import (
     APP_NAME,
@@ -173,22 +173,40 @@ def test_snapshot(outcome, lines, message):
 
 
 def test_error_snapshots():
-    assert messages.error_notification("wl-copy failed (exit 1)", cleared=True) == Message(
+    assert messages.error_notification("wl-copy failed (exit 1)", Scrub.CLEARED) == Message(
         "veil error: clipboard cleared",
-        "Copy the text again and retry.\n(wl-copy failed (exit 1))",
+        "Nothing to paste. Copy the text again and retry.\n(wl-copy failed (exit 1))",
         C,
         "dialog-error",
     )
-    assert messages.error_notification("the keyring is locked", cleared=False) == Message(
+    assert messages.error_notification("wl-copy failed (exit 1)", Scrub.REPLACED) == Message(
+        "veil error: clipboard replaced",
+        "Nothing to paste. Copy the text again and retry.\n(wl-copy failed (exit 1))",
+        C,
+        "dialog-error",
+    )
+    assert messages.error_notification("the keyring is locked", Scrub.FAILED) == Message(
         "veil error: clipboard NOT cleared",
         "Do not paste: the clipboard may hold unsanitized text.\n(the keyring is locked)",
         C,
         "dialog-error",
     )
+    assert messages.error_notification("the keyring is locked", None) == Message(
+        "veil error: nothing restored",
+        "The clipboard is unchanged.\n(the keyring is locked)",
+        C,
+        "dialog-error",
+    )
+
+
+@pytest.mark.parametrize("scrub", [*Scrub, None])
+def test_every_error_state_has_a_line_and_a_message(scrub):
+    assert messages.error_line(scrub).startswith("veil: ")
+    assert messages.error_notification("x", scrub).urgency is C
 
 
 def test_error_text_is_made_markup_free():
-    body = messages.error_notification("size <10> & more", cleared=True).body
+    body = messages.error_notification("size <10> & more", Scrub.CLEARED).body
     assert "<" not in body
     assert ">" not in body
     assert "&" not in body
@@ -361,9 +379,10 @@ class TestCliNotifications:
         board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
         assert run(capsys, "sanitize")[0] == ExitCode.OK
 
-    def test_errors_do_not_notify_yet(self, board, capsys, notifications):
-        # M2.5 adds the clear + critical notification; until then errors only go to stderr.
+    def test_errors_notify_critical(self, board, capsys, notifications):
+        # M2.5: fail closed, then one critical notification (more in test_clip_failclosed.py).
         board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}
         code, _, _ = run(capsys, "sanitize")
         assert code != ExitCode.OK
-        assert notifications == []
+        assert [n.summary for n in notifications] == ["veil error: clipboard cleared"]
+        assert notifications[0].urgency is C

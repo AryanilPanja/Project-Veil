@@ -7,12 +7,13 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 - the clipboard was sanitized, restored, or is empty → normal;
 - the clipboard still holds content that was NOT sanitized (rich text, an image or file, a
   password, or older content when nothing was selected) → critical: it stays until dismissed;
-- an error → critical (M2.5 clears the clipboard first).
+- an error → critical, saying whether the clipboard was cleared (M2.5).
 """
 
 from veil.clip.ask import Decision, describe
-from veil.clip.commands import Action, Outcome, Skip
+from veil.clip.commands import Action, Outcome, Scrub, Skip
 from veil.clip.notify import Message, Urgency
+from veil.errors import VeilError
 
 LABELS = {
     "name": "name",
@@ -92,22 +93,40 @@ def notification(outcome: Outcome) -> Message:
     return Message(f"veil: {where}, {found}", "\n".join(body))
 
 
-def error_notification(safe_message: str, *, cleared: bool) -> Message:
-    """For M2.5's fail-closed path. `safe_message` is a VeilError's value-free message."""
-    detail = _plain(safe_message)
-    if cleared:
-        return Message(
-            "veil error: clipboard cleared",
-            f"Copy the text again and retry.\n({detail})",
-            Urgency.CRITICAL,
-            icon="dialog-error",
-        )
-    return Message(
-        "veil error: clipboard NOT cleared",
-        f"Do not paste: the clipboard may hold unsanitized text.\n({detail})",
-        Urgency.CRITICAL,
-        icon="dialog-error",
-    )
+def error_line(scrub: Scrub | None) -> str:
+    """The stderr line after an error (M2.5). The error itself is reported by the CLI."""
+    if scrub is None:
+        return "veil: nothing restored; the clipboard is unchanged"
+    return {
+        Scrub.CLEARED: "veil: clipboard cleared (fail closed); copy the text again and retry",
+        Scrub.REPLACED: "veil: clipboard replaced by a placeholder (clearing failed); "
+        "copy the text again and retry",
+        Scrub.FAILED: "veil: clipboard NOT cleared: do not paste, it may hold unsanitized text",
+    }[scrub]
+
+
+def error_notification(safe_message: str, scrub: Scrub | None) -> Message:
+    """After an error (M2.5). `safe_message` is value-free (a VeilError's message or a class
+    name); `scrub` is what fail_closed did, None for restore (nothing to protect)."""
+    detail = f"({_plain(safe_message)})"
+    if scrub is None:
+        summary, body = "veil error: nothing restored", "The clipboard is unchanged."
+    elif scrub is Scrub.FAILED:
+        summary = "veil error: clipboard NOT cleared"
+        body = "Do not paste: the clipboard may hold unsanitized text."
+    else:
+        summary = f"veil error: clipboard {scrub.value}"
+        body = "Nothing to paste. Copy the text again and retry."
+    return Message(summary, f"{body}\n{detail}", Urgency.CRITICAL, icon="dialog-error")
+
+
+def error_detail(error: BaseException) -> str:
+    """A value-free description of any error: exception text may hold persona values."""
+    if isinstance(error, VeilError):
+        return error.safe_message
+    if isinstance(error, KeyboardInterrupt):
+        return "interrupted"
+    return f"internal error ({type(error).__name__})"
 
 
 def _sensitive_note(outcome: Outcome) -> str:

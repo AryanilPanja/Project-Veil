@@ -21,8 +21,10 @@ terms with policy GENERALIZE are always replaced by their phrase; ASK terms trig
 - Allow: sent as is; Generalize: replaced by the phrase; Deny (or no answer): clipboard cleared.
 Generalizing happens before translation, so the phrase is translated like any other text.
 
-The result is computed in full before anything is written. Errors propagate to the caller;
-clearing the clipboard on error (fail closed) is M2.5.
+The result is computed in full before anything is written. Errors propagate to the caller,
+which runs `fail_closed` for sanitize and from-selection (M2.5, spec §4.4): the clipboard may
+still hold the real text the user believes is about to be sanitized. Restore errors leave the
+clipboard alone: it holds the fake text, nothing to protect (decision tracks §AP).
 """
 
 from collections.abc import Callable
@@ -38,6 +40,7 @@ from veil.timing import STAGES
 EngineLoader = Callable[[], Engine]
 
 WAITING_PLACEHOLDER = "[veil: waiting for your answer about a sensitive detail]"
+ERROR_PLACEHOLDER = "[veil: error, nothing to paste. Copy the text again and retry]"
 
 
 class Action(Enum):
@@ -76,6 +79,14 @@ class Outcome:
     @property
     def total(self) -> int:
         return sum(self.replaced.values())
+
+
+class Scrub(Enum):
+    """What fail_closed managed to do."""
+
+    CLEARED = "cleared"
+    REPLACED = "replaced"  # clearing failed, but the placeholder replaced the original
+    FAILED = "failed"  # the original may still be on the clipboard
 
 
 def sanitize(board: Clipboard, load: EngineLoader, ask: Asker = deny_all) -> Outcome:
@@ -140,6 +151,29 @@ def _forward(
         decision=decision,
         generalized=len(to_generalize),
     )
+
+
+def fail_closed(board: Clipboard | None) -> Scrub:
+    """After an error: leave nothing real on CLIPBOARD (M2.5). Never raises.
+
+    The placeholder goes first: Klipper's "prevent empty clipboard" puts its newest history
+    entry back after a clear, and that entry must not be the original. Both steps are tried
+    whatever the other did. `board` is None when no clipboard tool could be found.
+    """
+    if board is None:
+        return Scrub.FAILED
+    replaced = _attempt(board.write_text, ERROR_PLACEHOLDER)
+    if _attempt(board.clear, Selection.CLIPBOARD):
+        return Scrub.CLEARED
+    return Scrub.REPLACED if replaced else Scrub.FAILED
+
+
+def _attempt(step: Callable[..., None], *args: object) -> bool:
+    try:
+        step(*args)
+    except Exception:  # noqa: BLE001 - fail closed: try the next step regardless
+        return False
+    return True
 
 
 def _categories(hits: list[RawMatch]) -> dict[str, int]:

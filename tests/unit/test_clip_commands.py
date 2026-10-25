@@ -366,7 +366,8 @@ class TestCli:
         board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}
         code, out, err = run(capsys, "sanitize")
         assert code not in (ExitCode.OK, ExitCode.INTERNAL)
-        assert board.writes == []
+        assert board.writes == [commands.ERROR_PLACEHOLDER]  # fail closed (M2.5)
+        assert board.text() is None
         assert_no_reals(out, err)
 
     @pytest.mark.usefixtures("imported")
@@ -375,7 +376,11 @@ class TestCli:
         board.fail_write = True
         code, out, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
-        assert err == "veil: wl-copy failed (exit 1)\n"
+        assert err == (
+            "veil: clipboard cleared (fail closed); copy the text again and retry\n"
+            "veil: wl-copy failed (exit 1)\n"
+        )
+        assert board.text() is None
         assert_no_reals(out, err)
 
     def test_no_clipboard_tool(self, monkeypatch, capsys):
@@ -384,6 +389,7 @@ class TestCli:
         code, _, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
         assert "no clipboard tool found" in err
+        assert "clipboard NOT cleared" in err
 
     def test_clip_without_subcommand_shows_help(self, capsys):
         with pytest.raises(SystemExit) as caught:
