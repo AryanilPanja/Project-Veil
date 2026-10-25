@@ -252,7 +252,7 @@ def _text_command(args: argparse.Namespace) -> int:
 
 
 def _clip_command(args: argparse.Namespace) -> int:
-    from veil.clip import commands, messages, notify
+    from veil.clip import commands, history, messages, notify
     from veil.clip.io import detect
     from veil.engine.load import load_engine
     from veil.timing import STAGES
@@ -268,7 +268,9 @@ def _clip_command(args: argparse.Namespace) -> int:
             outcome = commands.restore(board, load)
         else:
             forward = {"sanitize": commands.sanitize, "from-selection": commands.from_selection}
-            outcome = forward[args.clip_command](board, load, _asker(args.no_notify))
+            outcome = forward[args.clip_command](
+                board, load, _asker(args.no_notify), history.detect()
+            )
     except (Exception, KeyboardInterrupt) as error:
         # Fail closed (M2.5, spec §4.4), then let `main` report the error and pick the exit code.
         scrub = None if args.clip_command == "restore" else commands.fail_closed(board)

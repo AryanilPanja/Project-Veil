@@ -60,9 +60,11 @@ Veil **reduces** what you reveal; it does **not** make you anonymous. Your AI ac
 identifies you to the provider, unique content (your actual code or research) can identify you,
 and images/PDFs are passed through unchanged for now.
 
-**Clipboard history (KDE Klipper):** after you sanitize, Klipper still keeps your *original* text in
-its local history. Nothing is sent anywhere, but pasting an old entry from Klipper's history pastes
-the real text. Clear Klipper's history, or exclude veil from it, if that matters to you.
+**Clipboard history (KDE Klipper):** after you sanitize, veil removes your *original* text from
+Klipper's history. Klipper has no "remove one entry" call, so veil rebuilds the history without it:
+your other text entries are kept, but image entries drop out of the history. If that fails, the
+notification warns you. Other clipboard managers are not handled, and when a sanitize is denied or
+fails, the original stays in the history.
 
 ## Development
 Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.13 for you).

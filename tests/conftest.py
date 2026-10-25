@@ -103,6 +103,30 @@ def asker(monkeypatch):
     return scripted
 
 
+class RecordingForgetter:
+    """Stands in for the clipboard-history rebuild: records calls, never touches D-Bus."""
+
+    def __init__(self) -> None:
+        from veil.clip.history import Forget
+
+        self.result = Forget.NOT_RUNNING
+        self.calls = 0
+
+    def __call__(self, original, put_back):
+        self.calls += 1
+        return self.result
+
+
+@pytest.fixture(autouse=True)
+def clip_history(monkeypatch):
+    """No test may rebuild the owner's real clipboard history. Set `.result` to script it."""
+    from veil.clip import history
+
+    recorder = RecordingForgetter()
+    monkeypatch.setattr(history, "detect", lambda *a, **k: recorder)
+    return recorder
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""
