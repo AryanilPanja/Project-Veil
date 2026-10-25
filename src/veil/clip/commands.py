@@ -62,6 +62,7 @@ class Skip(Enum):
     RICH_ONLY = "no plain text (rich text only)"
     SECRET = "marked as a password by a password manager"  # noqa: S105 - a message
     DENIED = "sensitive detail withheld"
+    OFF = "veil is OFF (kill switch)"
 
 
 @dataclass(frozen=True)

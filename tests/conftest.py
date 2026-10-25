@@ -127,6 +127,32 @@ def clip_history(monkeypatch):
     return recorder
 
 
+class RecordingTimers:
+    """Stands in for the kill switch's systemd timers: records, never runs systemd-run."""
+
+    def __init__(self) -> None:
+        self.scheduled: list = []
+        self.cancelled = 0
+        self.ok = True
+
+    def schedule(self, switch, now) -> bool:
+        self.scheduled.append((switch, now))
+        return self.ok
+
+    def cancel(self) -> None:
+        self.cancelled += 1
+
+
+@pytest.fixture(autouse=True)
+def switch_timers(monkeypatch):
+    """No test may schedule a real systemd user timer (kill-switch notifications)."""
+    from veil import killswitch
+
+    recorder = RecordingTimers()
+    monkeypatch.setattr(killswitch, "detect_timers", lambda *a, **k: recorder)
+    return recorder
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""
