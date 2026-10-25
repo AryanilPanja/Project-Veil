@@ -176,6 +176,67 @@ def switch_chooser(monkeypatch):
     return scripted
 
 
+class FakeShortcutService:
+    """KDE's global-shortcut service in memory (kglobalaccel semantics veil relies on)."""
+
+    def __init__(self) -> None:
+        self.is_running = True
+        self.keys_by_component: dict[str, list[int]] = {}
+        self.taken: dict[int, str] = {}  # key → another component that holds it
+        self.registered: list[str] = []
+        self.fail: set[str] = set()
+        self.closed = 0
+
+    def _check(self, name):
+        if name in self.fail:
+            raise RuntimeError(name)
+
+    def running(self) -> bool:
+        self._check("running")
+        return self.is_running
+
+    def available(self, code, component) -> bool:
+        self._check("available")
+        holder = self.taken.get(code)
+        return holder is None or holder == component
+
+    def register(self, shortcut) -> None:
+        self._check("register")
+        self.registered.append(shortcut.component)
+
+    def set_keys(self, shortcut, codes) -> None:
+        self._check("set_keys")
+        self.keys_by_component[shortcut.component] = list(codes)
+
+    def keys(self, shortcut):
+        self._check("keys")
+        return self.keys_by_component.get(shortcut.component, [])
+
+    def forget(self, shortcut) -> None:
+        self._check("forget")
+        self.keys_by_component.pop(shortcut.component, None)
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+@pytest.fixture(autouse=True)
+def shortcut_service(monkeypatch):
+    """No test may change the owner's real KDE shortcuts or run kbuildsycoca6."""
+    from veil import shortcuts
+
+    fake = FakeShortcutService()
+    fake.rebuilds = 0
+
+    def rebuild() -> bool:
+        fake.rebuilds += 1
+        return True
+
+    monkeypatch.setattr(shortcuts, "JeepneyShortcuts", lambda *a, **k: fake)
+    monkeypatch.setattr(shortcuts, "kbuildsycoca", lambda *a, **k: rebuild)
+    return fake
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""
