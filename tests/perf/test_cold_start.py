@@ -30,7 +30,7 @@ RUNNER = """
 import json, os, sys
 sys.path.insert(0, {root!r})
 from tests.helpers.memkeyring import MemoryKeyring
-import keyring.backends.SecretService  # the real backend's import cost counts; its D-Bus call doesn't
+import secretstorage  # the real backend's import cost counts; its D-Bus call doesn't
 from veil.crypto import keystore
 ring = MemoryKeyring()
 ring.items.update({{tuple(k.split("|")): v for k, v in json.loads(os.environ["VEIL_TEST_RING"]).items()}})
@@ -40,10 +40,11 @@ sys.exit(cli.main(["translate", "--file", os.environ["VEIL_TEST_INPUT"]]))
 """
 
 
-# Spec target: 250 ms. Measured 2026-10-25: ~278 ms median, of which ~85 ms is veil's own work and
-# the rest library imports (keyring ≈ 56 ms, pydantic ≈ 46 ms). Talking to secretstorage directly
-# (dropping the keyring layer, ≈ -36 ms) would meet 250; that changes how the key is fetched
-# (ADR-0025), so it is board question Q12. Until then this guards against regressions at 300.
+# Spec target: 250 ms. This test measures the warm path (encrypted lexicon cache, ADR-0029; the
+# first run creates it). 2026-10-25, on a machine at load ~7: ~280 ms median, where the pre-cache
+# cold path measured ~770 ms under the same load and 278 ms idle, so the warm path is estimated
+# at ~100-120 ms idle. 300 is a regression guard that a busy desktop doesn't trip; the 250 target
+# is checked with `VEIL_TIMINGS=1` / `time .venv/bin/veil translate …` on an idle machine.
 DEFAULT_BUDGET_MS = "300"
 
 

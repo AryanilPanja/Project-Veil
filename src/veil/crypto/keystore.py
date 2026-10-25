@@ -5,9 +5,9 @@ Files in the config dir (0700; files 0600):
 - `key.age`: the identity encrypted with a passphrase (age scrypt). Passphrase mode only.
 
 Rules:
-- The keyring backend is pinned to `keyring.backends.SecretService.Keyring`. Never
-  `keyring.get_keyring()` and never `PYTHON_KEYRING_BACKEND`: a swapped backend could store the
-  key in plaintext.
+- The key lives in the freedesktop Secret Service (KDE ksecretd / GNOME keyring), reached through
+  `secretstorage` directly (ADR-0025 amendment 3). There is no backend selection at all, so
+  nothing (config, environment) can swap in a backend that stores the key in plaintext.
 - No automatic fallback between keyring and passphrase mode; the mode is chosen at setup.
 - Never generate a key while any key or encrypted store exists (`create` refuses).
 - Every keyring call runs in a worker thread with a hard timeout: KDE's ksecretd can hang or drop
@@ -53,10 +53,69 @@ class KeyBackend(StrEnum):
 
 
 def secret_service_backend() -> SecretBackend:
-    """The pinned Secret Service backend (KDE ksecretd / GNOME keyring)."""
-    from keyring.backends.SecretService import Keyring  # slow import: only when needed
+    """The Secret Service backend (KDE ksecretd / GNOME keyring), via secretstorage directly."""
+    return SecretStorageBackend()
 
-    return Keyring()
+
+class SecretStorageBackend:
+    """Get/set/delete one secret through the freedesktop Secret Service API (ADR-0025 amendment 3).
+
+    Talks to `secretstorage` directly instead of through the `keyring` library: same D-Bus
+    service, same wallet entry, ~36 ms less import time, and no backend switching machinery at
+    all (no config file, no environment override, no entry points).
+
+    Compatible with entries the `keyring` library created: items are found by the attributes
+    {"username", "service"} only (keyring adds "application", which a search ignores). Behaviour
+    mirrors keyring's SecretService backend: the default collection (created if missing), unlocked
+    when locked; a dismissed unlock prompt is reported as locked.
+    """
+
+    APPLICATION = "project-veil"
+
+    def _collection(self, connection):  # secretstorage types stay unimported until needed
+        import secretstorage  # imported lazily: only when the key is actually needed
+
+        collection = secretstorage.get_default_collection(connection)
+        if collection.is_locked():
+            collection.unlock()
+            if collection.is_locked():  # the user dismissed or ignored the prompt
+                raise secretstorage.exceptions.LockedException("collection is locked")
+        return collection
+
+    @staticmethod
+    def _query(service: str, username: str) -> dict[str, str]:
+        return {"username": username, "service": service}
+
+    def get_password(self, service: str, username: str) -> str | None:
+        import secretstorage
+
+        with contextlib.closing(secretstorage.dbus_init()) as connection:
+            for item in self._collection(connection).search_items(self._query(service, username)):
+                if item.is_locked():
+                    item.unlock()
+                    if item.is_locked():
+                        raise secretstorage.exceptions.LockedException("item is locked")
+                return item.get_secret().decode("utf-8")
+        return None
+
+    def set_password(self, service: str, username: str, password: str) -> None:
+        import secretstorage
+
+        attributes = {**self._query(service, username), "application": self.APPLICATION}
+        label = f"{service}: {username}"
+        with contextlib.closing(secretstorage.dbus_init()) as connection:
+            self._collection(connection).create_item(
+                label, attributes, password.encode("utf-8"), replace=True
+            )
+
+    def delete_password(self, service: str, username: str) -> None:
+        import secretstorage
+
+        with contextlib.closing(secretstorage.dbus_init()) as connection:
+            for item in self._collection(connection).search_items(self._query(service, username)):
+                item.delete()
+                return
+        raise secretstorage.exceptions.ItemNotFoundException("no such secret")
 
 
 def keyring_username(directory: Path) -> str:

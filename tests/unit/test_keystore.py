@@ -379,11 +379,11 @@ class TestKeyringFailures:
             make(set_up, FailingKeyring(error)).load()
         assert info.value.exit_code == ExitCode.KEY_UNAVAILABLE
 
-    def test_keyring_library_locked_error(self, set_up):
-        from keyring.errors import KeyringLocked
+    def test_secretstorage_locked_error(self, set_up):
+        from secretstorage.exceptions import LockedException as RealLocked
 
         with pytest.raises(KeyUnavailable, match="locked"):
-            make(set_up, FailingKeyring(KeyringLocked("x"))).load()
+            make(set_up, FailingKeyring(RealLocked("x"))).load()
 
     @pytest.mark.parametrize(
         "error",
@@ -394,10 +394,18 @@ class TestKeyringFailures:
             make(set_up, FailingKeyring(error)).load()
         assert type(error).__name__ in str(info.value)
 
-    def test_keyring_library_errors(self, set_up):
-        from keyring.errors import InitError, NoKeyringError
+    def test_secretstorage_errors(self, set_up):
+        from secretstorage.exceptions import (
+            ItemNotFoundException,
+            SecretServiceNotAvailableException,
+            SecretStorageException,
+        )
 
-        for error in (InitError("x"), NoKeyringError("x")):
+        for error in (
+            SecretServiceNotAvailableException("x"),
+            SecretStorageException("x"),
+            ItemNotFoundException("x"),
+        ):
             with pytest.raises(KeyUnavailable):
                 make(set_up, FailingKeyring(error)).load()
 
@@ -499,13 +507,20 @@ class TestStatusAndPinning:
         assert identity.recipient not in text
         assert str(config) not in text
 
-    def test_default_backend_is_pinned_secret_service(self):
+    def test_default_backend_is_secret_service_with_no_backend_selection(self, monkeypatch):
+        import importlib
         import inspect
 
         source = inspect.getsource(keystore)
-        assert "keyring.backends.SecretService import Keyring" in source
-        assert "get_keyring" not in source.replace("`keyring.get_keyring()`", "")
-        assert "PYTHON_KEYRING_BACKEND" not in source.replace("never `PYTHON_KEYRING_BACKEND`", "")
+        assert "import keyring" not in source
+        assert "get_keyring" not in source
+        # The autouse fixture replaced the factory; check the real one, without calling D-Bus.
+        real = importlib.reload(importlib.import_module("veil.crypto.keystore"))
+        try:
+            assert isinstance(real.secret_service_backend(), real.SecretStorageBackend)
+        finally:
+            importlib.reload(real)
+            monkeypatch.setattr(real, "secret_service_backend", keystore.secret_service_backend)
 
     def test_tests_cannot_reach_the_real_keyring(self, config):
         with pytest.raises(KeyUnavailable, match="AssertionError"):
@@ -557,3 +572,160 @@ class TestKeyringUsername:
         assert real.username == USERNAME
         real.create(KeyBackend.KEYRING, store_exists=False)
         assert (SERVICE, USERNAME) in ring.items
+
+
+# ── the real backend, against a fake secretstorage module (tests never reach D-Bus) ──
+
+
+class FakeItem:
+    def __init__(self, attributes, secret, locked=False, unlocks=True):
+        self.attributes, self.secret = attributes, secret
+        self.locked, self.unlocks, self.deleted = locked, unlocks, False
+
+    def is_locked(self):
+        return self.locked
+
+    def unlock(self):
+        if self.unlocks:
+            self.locked = False
+        return not self.unlocks
+
+    def get_secret(self):
+        return self.secret
+
+    def delete(self):
+        self.deleted = True
+
+
+class FakeCollection:
+    def __init__(self, items, locked=False, unlocks=True):
+        self.items, self.locked, self.unlocks = items, locked, unlocks
+        self.created = []
+
+    def is_locked(self):
+        return self.locked
+
+    def unlock(self):
+        if self.unlocks:
+            self.locked = False
+        return not self.unlocks
+
+    def search_items(self, attributes):
+        return [
+            i for i in self.items if all(i.attributes.get(k) == v for k, v in attributes.items())
+        ]
+
+    def create_item(self, label, attributes, secret, replace=False):
+        self.created.append((label, attributes, secret, replace))
+
+
+@pytest.fixture
+def fake_secretstorage(monkeypatch):
+    import sys
+    import types
+
+    from secretstorage import exceptions as real_exceptions
+
+    state = {"collection": FakeCollection([]), "connections": []}
+
+    class Connection:
+        closed = False
+
+        def close(self):
+            self.closed = True
+
+    def dbus_init():
+        conn = Connection()
+        state["connections"].append(conn)
+        return conn
+
+    module = types.ModuleType("secretstorage")
+    module.dbus_init = dbus_init
+    module.get_default_collection = lambda conn: state["collection"]
+    module.exceptions = real_exceptions
+    monkeypatch.setitem(sys.modules, "secretstorage", module)
+    return state
+
+
+class TestSecretStorageBackend:
+    def test_finds_an_entry_created_by_the_keyring_library(self, fake_secretstorage):
+        legacy = FakeItem(
+            {
+                "username": "age-identity-v1",
+                "service": "project-veil",
+                "application": "Python keyring library",
+            },
+            b"AGE-SECRET-KEY-1TEST",
+        )
+        fake_secretstorage["collection"] = FakeCollection([legacy])
+        backend = keystore.SecretStorageBackend()
+        assert backend.get_password("project-veil", "age-identity-v1") == "AGE-SECRET-KEY-1TEST"
+
+    def test_missing_entry_is_none(self, fake_secretstorage):
+        assert keystore.SecretStorageBackend().get_password("project-veil", "nobody") is None
+
+    def test_other_services_are_not_matched(self, fake_secretstorage):
+        other = FakeItem({"username": "age-identity-v1", "service": "something-else"}, b"x")
+        fake_secretstorage["collection"] = FakeCollection([other])
+        assert (
+            keystore.SecretStorageBackend().get_password("project-veil", "age-identity-v1") is None
+        )
+
+    def test_set_creates_item_with_replace(self, fake_secretstorage):
+        keystore.SecretStorageBackend().set_password("project-veil", "age-identity-v1", "secret")
+        ((label, attributes, secret, replace),) = fake_secretstorage["collection"].created
+        assert attributes == {
+            "username": "age-identity-v1",
+            "service": "project-veil",
+            "application": "project-veil",
+        }
+        assert secret == b"secret"
+        assert replace is True
+        assert "secret" not in label
+
+    def test_delete_first_match(self, fake_secretstorage):
+        item = FakeItem({"username": "u", "service": "s"}, b"x")
+        fake_secretstorage["collection"] = FakeCollection([item])
+        keystore.SecretStorageBackend().delete_password("s", "u")
+        assert item.deleted
+
+    def test_delete_missing_raises(self, fake_secretstorage):
+        from secretstorage.exceptions import ItemNotFoundException
+
+        with pytest.raises(ItemNotFoundException):
+            keystore.SecretStorageBackend().delete_password("s", "u")
+
+    def test_locked_collection_is_unlocked(self, fake_secretstorage):
+        item = FakeItem({"username": "u", "service": "s"}, b"k")
+        fake_secretstorage["collection"] = FakeCollection([item], locked=True, unlocks=True)
+        assert keystore.SecretStorageBackend().get_password("s", "u") == "k"
+
+    def test_dismissed_unlock_prompt_is_locked(self, fake_secretstorage):
+        from secretstorage.exceptions import LockedException
+
+        fake_secretstorage["collection"] = FakeCollection([], locked=True, unlocks=False)
+        with pytest.raises(LockedException):
+            keystore.SecretStorageBackend().get_password("s", "u")
+
+    def test_locked_item_that_stays_locked(self, fake_secretstorage):
+        from secretstorage.exceptions import LockedException
+
+        item = FakeItem({"username": "u", "service": "s"}, b"k", locked=True, unlocks=False)
+        fake_secretstorage["collection"] = FakeCollection([item])
+        with pytest.raises(LockedException):
+            keystore.SecretStorageBackend().get_password("s", "u")
+
+    def test_connections_are_always_closed(self, fake_secretstorage):
+        backend = keystore.SecretStorageBackend()
+        backend.get_password("s", "u")
+        backend.set_password("s", "u", "x")
+        with pytest.raises(Exception):  # noqa: B017, PT011 - any error; we only check cleanup
+            backend.delete_password("s", "u")
+        assert fake_secretstorage["connections"]
+        assert all(c.closed for c in fake_secretstorage["connections"])
+
+    def test_through_keystore_locked_maps_to_exit_4(self, fake_secretstorage, tmp_path):
+        fake_secretstorage["collection"] = FakeCollection([], locked=True, unlocks=False)
+        store = KeyStore(tmp_path / "veil", secrets=keystore.SecretStorageBackend, timeout=2)
+        with pytest.raises(KeyUnavailable, match="locked"):
+            store._keyring_get()
