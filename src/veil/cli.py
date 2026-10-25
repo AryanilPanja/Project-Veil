@@ -261,11 +261,21 @@ def _clip_command(args: argparse.Namespace) -> int:
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
-    if args.clip_command == "restore":
-        outcome = commands.restore(detect(), load)
-    else:
-        forward = {"sanitize": commands.sanitize, "from-selection": commands.from_selection}
-        outcome = forward[args.clip_command](detect(), load, _asker(args.no_notify))
+    board = None
+    try:
+        board = detect()
+        if args.clip_command == "restore":
+            outcome = commands.restore(board, load)
+        else:
+            forward = {"sanitize": commands.sanitize, "from-selection": commands.from_selection}
+            outcome = forward[args.clip_command](board, load, _asker(args.no_notify))
+    except (Exception, KeyboardInterrupt) as error:
+        # Fail closed (M2.5, spec §4.4), then let `main` report the error and pick the exit code.
+        scrub = None if args.clip_command == "restore" else commands.fail_closed(board)
+        ui.err(messages.error_line(scrub))
+        if not args.no_notify:
+            notify.detect().notify(messages.error_notification(messages.error_detail(error), scrub))
+        raise
     for line in messages.stderr_lines(outcome):
         ui.err(line)
     if not args.no_notify:
