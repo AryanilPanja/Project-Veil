@@ -13,6 +13,14 @@ key access. Then:
 - otherwise the result is **always** written back, even with zero replacements: the original
   copy may carry rich types (an HTML `mailto:` link) that hold details the plain text doesn't.
 
+Ask before send (M2.4, ADR-0012), sanitize and from-selection only. Listed special-category
+terms with policy GENERALIZE are always replaced by their phrase; ASK terms trigger the question:
+- while waiting, the clipboard holds a harmless placeholder (a reflexive Ctrl+V pastes nothing
+  real, and it becomes the newest Klipper entry, so "prevent empty clipboard" can't bring the
+  original back after a Deny);
+- Allow: sent as is; Generalize: replaced by the phrase; Deny (or no answer): clipboard cleared.
+Generalizing happens before translation, so the phrase is translated like any other text.
+
 The result is computed in full before anything is written. Errors propagate to the caller;
 clearing the clipboard on error (fail closed) is M2.5.
 """
@@ -21,11 +29,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+from veil.clip.ask import Asker, Decision, deny_all
 from veil.clip.io import Clipboard, Kind, Selection
-from veil.engine.matcher import Engine
+from veil.engine.matcher import Engine, RawMatch
+from veil.persona.policy import Policy
 from veil.timing import STAGES
 
 EngineLoader = Callable[[], Engine]
+
+WAITING_PLACEHOLDER = "[veil: waiting for your answer about a sensitive detail]"
 
 
 class Action(Enum):
@@ -42,6 +54,7 @@ class Skip(Enum):
     NON_TEXT = "no plain text (an image or a file)"
     RICH_ONLY = "no plain text (rich text only)"
     SECRET = "marked as a password by a password manager"  # noqa: S105 - a message
+    DENIED = "sensitive detail withheld"
 
 
 @dataclass(frozen=True)
@@ -52,6 +65,9 @@ class Outcome:
     skipped: Skip | None = None
     replaced: dict[str, int] = field(default_factory=dict)  # entity kind → count
     preexisting_fakes: int = 0  # sanitize: fake forms already in the input (can't round-trip)
+    asked: dict[str, int] = field(default_factory=dict)  # ASK category → count
+    decision: Decision | None = None  # set when the user was asked
+    generalized: int = 0  # spans replaced by their generalized phrase
 
     @property
     def changed(self) -> bool:
@@ -62,12 +78,12 @@ class Outcome:
         return sum(self.replaced.values())
 
 
-def sanitize(board: Clipboard, load: EngineLoader) -> Outcome:
-    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE)
+def sanitize(board: Clipboard, load: EngineLoader, ask: Asker = deny_all) -> Outcome:
+    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE, ask)
 
 
-def from_selection(board: Clipboard, load: EngineLoader) -> Outcome:
-    return _forward(board, load, Selection.PRIMARY, Action.FROM_SELECTION)
+def from_selection(board: Clipboard, load: EngineLoader, ask: Asker = deny_all) -> Outcome:
+    return _forward(board, load, Selection.PRIMARY, Action.FROM_SELECTION, ask)
 
 
 def restore(board: Clipboard, load: EngineLoader) -> Outcome:
@@ -83,7 +99,9 @@ def restore(board: Clipboard, load: EngineLoader) -> Outcome:
     return Outcome(Action.RESTORE, replaced=counts)
 
 
-def _forward(board: Clipboard, load: EngineLoader, source: Selection, action: Action) -> Outcome:
+def _forward(
+    board: Clipboard, load: EngineLoader, source: Selection, action: Action, ask: Asker
+) -> Outcome:
     content = board.read(source)
     STAGES.mark("read")
     skipped = _skip(content.kind, content.secret, source)
@@ -91,12 +109,45 @@ def _forward(board: Clipboard, load: EngineLoader, source: Selection, action: Ac
         return Outcome(action, skipped)
     engine = load()
     text = content.text or ""  # TEXT always carries text
+
+    hits = engine.sensitive(text)
+    to_ask = [h for h in hits if h.form.entity.policy is Policy.ASK]
+    to_generalize = [h for h in hits if h.form.entity.policy is Policy.GENERALIZE]
+    asked = _categories(to_ask)
+    decision = None
+    if to_ask:
+        board.write_text(WAITING_PLACEHOLDER)
+        STAGES.mark("ask")
+        decision = ask(asked, engine.lexicon.ask_timeout_seconds)
+        if decision is Decision.DENY:
+            board.clear(Selection.CLIPBOARD)
+            return Outcome(action, Skip.DENIED, asked=asked, decision=decision)
+        if decision is Decision.GENERALIZE:
+            to_generalize += to_ask
+    if to_generalize:
+        text = Engine.generalize(text, to_generalize)
+
     out, counts = engine.forward_counted(text)
     preexisting = sum(engine.ambiguous(text).values())
     STAGES.mark("translate")
     board.write_text(out)  # always CLIPBOARD, plain text only
     STAGES.mark("write")
-    return Outcome(action, replaced=counts, preexisting_fakes=preexisting)
+    return Outcome(
+        action,
+        replaced=counts,
+        preexisting_fakes=preexisting,
+        asked=asked,
+        decision=decision,
+        generalized=len(to_generalize),
+    )
+
+
+def _categories(hits: list[RawMatch]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for hit in hits:
+        category = hit.form.entity.meta_value("category", "sensitive")
+        counts[category] = counts.get(category, 0) + 1
+    return counts
 
 
 def _skip(kind: Kind, secret: bool, source: Selection) -> Skip | None:

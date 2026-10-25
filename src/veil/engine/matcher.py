@@ -174,6 +174,7 @@ class Engine:
         self.reverse_matcher = Matcher(
             lexicon.reverse, lexicon.never_reverse | lexicon.never_translate
         )
+        self.sensitive_matcher = Matcher(lexicon.sensitive, frozenset())
 
     def __repr__(self) -> str:
         return f"Engine({self.lexicon!r})"
@@ -190,6 +191,26 @@ class Engine:
 
     def reverse_counted(self, text: str) -> tuple[str, dict[str, int]]:
         return self.reverse_matcher.apply_counted(text)
+
+    def sensitive(self, text: str) -> list[RawMatch]:
+        """Listed special-category terms in `text` (ADR-0012), leftmost-longest, raw offsets.
+
+        Each match's `form.entity` carries the policy (ASK or GENERALIZE) and the category
+        (`meta_value("category")`); never the term itself in anything shown to the user.
+        """
+        return self.sensitive_matcher.find(text)
+
+    @staticmethod
+    def generalize(text: str, matches: list[RawMatch]) -> str:
+        """`text` with each match replaced by its generalized phrase, verbatim."""
+        out: list[str] = []
+        cursor = 0
+        for m in sorted(matches, key=lambda m: m.start):
+            out.append(text[cursor : m.start])
+            out.append(m.form.variant.fake)
+            cursor = m.end
+        out.append(text[cursor:])
+        return "".join(out)
 
     def audit(self, text: str) -> list["AuditHit"]:
         """Every real form in `text` (context guards ignored: an audit must be conservative).

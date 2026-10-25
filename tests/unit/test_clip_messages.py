@@ -206,7 +206,8 @@ def test_unsanitized_content_is_always_critical():
     for skip in (Skip.RICH_ONLY, Skip.NON_TEXT, Skip.SECRET):
         assert messages.notification(Outcome(Action.SANITIZE, skip)).urgency is C
     for skip in Skip:
-        assert messages.notification(Outcome(Action.FROM_SELECTION, skip)).urgency is C
+        if skip is not Skip.DENIED:  # Deny clears the clipboard: nothing unsanitized is left
+            assert messages.notification(Outcome(Action.FROM_SELECTION, skip)).urgency is C
 
 
 def test_every_entity_kind_has_a_label():

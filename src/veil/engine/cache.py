@@ -25,7 +25,7 @@ from veil.persona.model import Entity, EntityKind
 from veil.persona.policy import Policy
 
 CACHE_FILE = "persona.cache.age"
-FORMAT = 1
+FORMAT = 2  # 2: sensitive terms + ask timeout (M2.4)
 WHAT = "the lexicon cache"
 MAX_CACHE_BYTES = 64 * 1024 * 1024
 _CODE_DIRS = ("engine", "text", "persona")
@@ -100,6 +100,8 @@ def encode(lexicon: Lexicon, key: str) -> bytes:
         "reverse": forms(lexicon.reverse),
         "never_translate": sorted(lexicon.never_translate),
         "never_reverse": sorted(lexicon.never_reverse),
+        "sensitive": forms(lexicon.sensitive),
+        "ask_timeout_seconds": lexicon.ask_timeout_seconds,
     }
     doc["entities"] = entities
     return json.dumps(doc, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -132,6 +134,8 @@ def decode(data: bytes, key: str) -> Lexicon | None:
             reverse=forms(doc["reverse"]),
             never_translate=frozenset(str(t) for t in doc["never_translate"]),
             never_reverse=frozenset(str(t) for t in doc["never_reverse"]),
+            sensitive=forms(doc["sensitive"]),
+            ask_timeout_seconds=int(doc["ask_timeout_seconds"]),
         )
     except (ValueError, KeyError, TypeError, IndexError, AttributeError):
         return None

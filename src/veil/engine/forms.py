@@ -93,9 +93,16 @@ class Lexicon:
     reverse: tuple[Form, ...]  # fake → real (reversible entities only)
     never_translate: frozenset[str]  # canon forms
     never_reverse: frozenset[str]  # canon forms
+    # Special-category terms (ADR-0012), forward only: variant.real = the listed term,
+    # variant.fake = its generalized phrase; entity.policy ASK or GENERALIZE, meta "category".
+    sensitive: tuple[Form, ...] = ()
+    ask_timeout_seconds: int = 120
 
     def __repr__(self) -> str:
-        return f"Lexicon(forward={len(self.forward)}, reverse={len(self.reverse)})"
+        return (
+            f"Lexicon(forward={len(self.forward)}, reverse={len(self.reverse)}, "
+            f"sensitive={len(self.sensitive)})"
+        )
 
 
 # ── case ──────────────────────────────────────────────────────────────────────

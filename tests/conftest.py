@@ -79,6 +79,30 @@ def notifications(monkeypatch):
     return recorder.messages
 
 
+class ScriptedAsker:
+    """Stands in for the Allow/Generalize/Deny notification: answers `answer` (default Deny)."""
+
+    def __init__(self) -> None:
+        self.answer = "deny"
+        self.questions: list = []
+
+    def __call__(self, categories, timeout):
+        from veil.clip.ask import Decision
+
+        self.questions.append((dict(categories), timeout))
+        return Decision(self.answer)
+
+
+@pytest.fixture(autouse=True)
+def asker(monkeypatch):
+    """No test may show a real ask-before-send prompt. Set `asker.answer` to script it."""
+    from veil.clip import ask
+
+    scripted = ScriptedAsker()
+    monkeypatch.setattr(ask, "detect", lambda *a, **k: scripted)
+    return scripted
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""

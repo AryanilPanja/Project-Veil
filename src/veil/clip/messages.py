@@ -10,6 +10,7 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 - an error → critical (M2.5 clears the clipboard first).
 """
 
+from veil.clip.ask import Decision, describe
 from veil.clip.commands import Action, Outcome, Skip
 from veil.clip.notify import Message, Urgency
 
@@ -49,6 +50,9 @@ def categories(replaced: dict[str, int]) -> str:
 
 def stderr_lines(outcome: Outcome) -> list[str]:
     lines = [_line(outcome)]
+    sensitive = _sensitive_note(outcome)
+    if sensitive:
+        lines.append(f"veil: {sensitive[:1].lower()}{sensitive[1:]}")
     if outcome.preexisting_fakes:
         lines.append(
             f"veil: warning: the text already contained {outcome.preexisting_fakes} fake "
@@ -58,6 +62,11 @@ def stderr_lines(outcome: Outcome) -> list[str]:
 
 
 def notification(outcome: Outcome) -> Message:
+    if outcome.skipped is Skip.DENIED:
+        return Message(
+            "veil: withheld, clipboard cleared",
+            f"Sensitive: {describe(outcome.asked)}. Nothing to paste.",
+        )
     if outcome.skipped is not None:
         return _skipped(outcome.action, outcome.skipped)
     detail = categories(outcome.replaced)
@@ -71,6 +80,9 @@ def notification(outcome: Outcome) -> Message:
     where = "selection sanitized" if outcome.action is Action.FROM_SELECTION else "sanitized"
     found = f"{outcome.total} replaced" if outcome.total else "no personal details found"
     body = [detail] if detail else []
+    sensitive = _sensitive_note(outcome)
+    if sensitive:
+        body.append(sensitive)
     body.append("Plain text only. Ready to paste.")
     if outcome.preexisting_fakes:
         body.append(
@@ -98,7 +110,24 @@ def error_notification(safe_message: str, *, cleared: bool) -> Message:
     )
 
 
+def _sensitive_note(outcome: Outcome) -> str:
+    """What happened to listed special-category terms; categories and counts only."""
+    if outcome.decision is Decision.ALLOW:
+        note = f"Sensitive sent as is ({describe(outcome.asked)})."
+        if outcome.generalized:
+            note += f" {outcome.generalized} other detail(s) generalized."
+        return note
+    if outcome.generalized:
+        return f"Generalized {outcome.generalized} sensitive detail(s)."
+    return ""
+
+
 def _line(outcome: Outcome) -> str:
+    if outcome.skipped is Skip.DENIED:
+        return (
+            f"veil: clipboard NOT sanitized: {Skip.DENIED.value} ({describe(outcome.asked)}); "
+            "clipboard cleared"
+        )
     if outcome.skipped is not None:
         verb = "restored" if outcome.action is Action.RESTORE else "sanitized"
         return f"veil: clipboard NOT {verb}: {outcome.skipped.value}; left unchanged"
