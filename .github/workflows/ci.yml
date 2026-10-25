@@ -42,9 +42,16 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Tests
+        env:
+          # Shared runners are slower and noisier than a laptop; the local default is stricter.
+          VEIL_PERF_BUDGET_MS: "1500"
         run: uv run pytest -q
 
       - name: Property tests (stress profile)
         env:
           HYPOTHESIS_PROFILE: ci
-        run: uv run pytest -q tests/unit/test_containment.py tests/unit/test_normalize.py
+        run: >-
+          uv run pytest -q
+          tests/unit/test_containment.py tests/unit/test_normalize.py tests/unit/test_aho.py
+          tests/unit/test_variants.py tests/unit/test_compose.py tests/unit/test_matcher.py
+          tests/unit/test_academic.py tests/unit/test_generate.py

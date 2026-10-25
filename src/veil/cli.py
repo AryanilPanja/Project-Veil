@@ -8,9 +8,21 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from veil import __version__, hardening, paths, ui
+import veil
+from veil import hardening, paths, ui
 from veil.errors import VeilError
 from veil.exitcodes import ExitCode
+
+
+class _VersionAction(argparse.Action):
+    """Like argparse's "version", but only looks the version up when --version is given."""
+
+    def __init__(self, option_strings, dest, **kwargs):
+        super().__init__(option_strings, dest, nargs=0, **kwargs)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        ui.out(f"veil {veil.__version__}")
+        parser.exit()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="veil",
         description="Translate personal information into a consistent fake persona.",
     )
-    parser.add_argument("--version", action="version", version=f"veil {__version__}")
+    parser.add_argument("--version", action=_VersionAction, help="show the version and exit")
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     for name, help_text in (

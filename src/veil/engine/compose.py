@@ -30,7 +30,7 @@ from veil.engine.variants import ExpandedEntity, Variant, expand
 from veil.persona.entities import Entity, FlatPersona
 from veil.persona.policy import Policy
 from veil.persona.walk import EntityKind
-from veil.text.containment import NaiveIndex
+from veil.text.aho import containment_pairs
 from veil.text.normalize import canon
 
 MIN_DERIVED = 4  # letters and digits, separators not counted
@@ -142,7 +142,26 @@ def _filter(
     declared_fake = {canon(v.fake) for e in declared for v in e.variants}
     real_texts = [v.real for e in declared for v in e.variants]
     fake_texts = [v.fake for e in declared for v in e.variants]
-    real_index, fake_index = NaiveIndex(real_texts), NaiveIndex(fake_texts)
+
+    # Containment, batched (one Aho-Corasick pass per haystack instead of every pair):
+    # a candidate is unsafe if its fake sits inside a declared real, its real inside a declared
+    # fake, or a declared fake/real sits inside its real/fake.
+    pairs_all = [
+        (real, fake)
+        for _, entity in candidates
+        for real, fake in zip(entity.real_forms, entity.fake_forms, strict=True)
+    ]
+    cand_reals = [r for r, _ in pairs_all]
+    cand_fakes = [f for _, f in pairs_all]
+    unsafe: set[tuple[str, str]] = set()
+    for i in containment_pairs(cand_fakes, real_texts):
+        unsafe.add(pairs_all[i])
+    for i in containment_pairs(cand_reals, fake_texts):
+        unsafe.add(pairs_all[i])
+    for hay in {j for js in containment_pairs(fake_texts, cand_reals).values() for j in js}:
+        unsafe.add(pairs_all[hay])
+    for hay in {j for js in containment_pairs(real_texts, cand_fakes).values() for j in js}:
+        unsafe.add(pairs_all[hay])
 
     def safe(real: str, fake: str) -> bool:
         r, f = canon(real), canon(fake)
@@ -150,9 +169,7 @@ def _filter(
             return False
         if r in declared_real or r in declared_fake or f in declared_fake or f in declared_real:
             return False  # a declared form already covers it (or would be contradicted)
-        if real_index.containing(fake) or fake_index.containing(real):
-            return False
-        return not (_inside_any(real, fake_texts) or _inside_any(fake, real_texts))
+        return (real, fake) not in unsafe
 
     # How each canon real/fake is derived by people other than the owner.
     others_targets: dict[str, set[str]] = {}
@@ -190,12 +207,6 @@ def _filter(
 
 def _letters(text: str) -> int:
     return sum(c.isalnum() for c in text)
-
-
-def _inside_any(text: str, others: Sequence[str]) -> bool:
-    """Does any of `others` occur (bounded) inside `text`?"""
-    index = NaiveIndex([text])
-    return any(index.containing(other) for other in others if canon(other))
 
 
 def all_variants(expanded: Sequence[ExpandedEntity]) -> list[tuple[Variant, Entity]]:

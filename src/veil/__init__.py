@@ -1,5 +1,11 @@
 """Project Veil: translate personal information into a consistent fake persona."""
 
-from importlib.metadata import version
 
-__version__ = version("project-veil")
+def __getattr__(name: str) -> str:
+    # Computed on first use: importlib.metadata costs ~20 ms at import, and every hotkey
+    # invocation imports veil.
+    if name == "__version__":
+        from importlib.metadata import version
+
+        return version("project-veil")
+    raise AttributeError(name)

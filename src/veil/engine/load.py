@@ -19,11 +19,11 @@ from veil.engine.fill import fill_generated
 from veil.engine.lexicon import build_lexicon
 from veil.engine.matcher import Engine
 from veil.engine.vault import VaultFile
-from veil.errors import ValidationFailed
-from veil.persona.check import check_bytes
+from veil.errors import PersonaFormatError, ValidationFailed
 from veil.persona.entities import flatten
-from veil.persona.schema import parse_persona
+from veil.persona.schema import PersonaSchemaError, parse_persona
 from veil.persona.store import PersonaStore
+from veil.persona.validate import validate
 from veil.persona.yamlio import load_yaml
 
 
@@ -32,13 +32,14 @@ def load_engine(
 ) -> Engine:
     identity = keystore.load(ask_passphrase)
     payload = store.load(identity)
-    report = check_bytes(payload.data)
-    if report.errors:
-        raise ValidationFailed(
-            f"the encrypted persona has {len(report.errors)} error(s); "
-            "run `veil persona check` for the field paths"
-        )
-    flat = flatten(parse_persona(load_yaml(payload.data)))
+    try:
+        persona = parse_persona(load_yaml(payload.data))  # parsed once, then validated
+    except (PersonaFormatError, PersonaSchemaError):
+        raise _invalid(1) from None
+    errors = validate(persona).errors
+    if errors:
+        raise _invalid(len(errors))
+    flat = flatten(persona)
     vault_file = VaultFile(store.directory)
     vault = vault_file.load(identity)
     filled = fill_generated(flat, vault)
@@ -49,3 +50,9 @@ def load_engine(
             if vault.dirty:
                 vault_file.save(vault, identity, recipient=keystore.recipient())
     return Engine(build_lexicon(filled))
+
+
+def _invalid(count: int) -> ValidationFailed:
+    return ValidationFailed(
+        f"the encrypted persona has {count} error(s); run `veil persona check` for the field paths"
+    )
