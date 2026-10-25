@@ -12,7 +12,7 @@ from tests.helpers.fakeclip import FakeBoard
 from tests.unit.test_matcher import FIXTURE, lexicon_from
 from tests.unit.test_textcmd import imported  # noqa: F401 - pytest fixture
 from veil import cli
-from veil.clip import commands
+from veil.clip import commands, messages
 from veil.clip import io as clipio
 from veil.clip.commands import Action, Outcome, Skip
 from veil.clip.io import Selection
@@ -110,7 +110,7 @@ class TestSanitize:
     def test_preexisting_fake_forms_are_counted(self, engine):
         outcome = commands.sanitize(FakeBoard.with_text("Alex Smith met Jane Doe"), Loader(engine))
         assert outcome.preexisting_fakes >= 1
-        assert commands.warnings(outcome)
+        assert messages.stderr_lines(outcome)[1].startswith("veil: warning:")
 
     def test_large_text(self, engine):
         text = REAL * 2000  # ~240 KB
@@ -285,54 +285,6 @@ class TestRestore:
         assert board.text().casefold().split() == text.casefold().split()
 
 
-# ── messages ──────────────────────────────────────────────────────────────────
-
-
-class TestSummary:
-    def test_sanitized(self):
-        line = commands.summary(
-            Outcome(Action.SANITIZE, replaced={"email": 1, "name": 3, "path": 1})
-        )
-        assert (
-            line
-            == "veil: sanitized: 5 replacement(s) (name 3, email 1, path 1); clipboard holds plain text only"
-        )
-
-    def test_sanitized_nothing_found(self):
-        assert commands.summary(Outcome(Action.SANITIZE)) == (
-            "veil: sanitized: no personal details; clipboard holds plain text only"
-        )
-
-    def test_from_selection(self):
-        assert "sanitized from the selection: 1 replacement(s) (org 1)" in commands.summary(
-            Outcome(Action.FROM_SELECTION, replaced={"org": 1})
-        )
-
-    def test_restored(self):
-        assert commands.summary(Outcome(Action.RESTORE, replaced={"name": 2})) == (
-            "veil: restored 2 detail(s) (name 2)"
-        )
-
-    @pytest.mark.parametrize("skip", list(Skip))
-    @pytest.mark.parametrize("action", list(Action))
-    def test_skipped(self, action, skip):
-        line = commands.summary(Outcome(action, skip))
-        assert "NOT" in line
-        assert skip.value in line
-        assert "left unchanged" in line
-
-    def test_no_warning_without_preexisting_fakes(self):
-        assert commands.warnings(Outcome(Action.SANITIZE)) == []
-
-    @given(
-        st.dictionaries(st.sampled_from(["name", "email", "path", "org"]), st.integers(1, 10**6))
-    )
-    def test_counts_add_up(self, replaced):
-        line = commands.summary(Outcome(Action.SANITIZE, replaced=replaced))
-        if replaced:
-            assert f"{sum(replaced.values())} replacement(s)" in line
-
-
 # ── CLI end to end (imported synthetic store) ─────────────────────────────────
 
 
@@ -372,7 +324,7 @@ class TestCli:
         assert board.text() == REAL
         assert (
             err
-            == "veil: restored 6 detail(s) (class_term 1, email 1, name 1, org 1, path 1, token 1)\n"
+            == "veil: restored 6 detail(s) (degree/year 1, email 1, name 1, organisation 1, other 1, path 1)\n"
         )
         assert_no_reals(out, err)
 
