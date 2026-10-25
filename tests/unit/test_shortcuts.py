@@ -368,24 +368,28 @@ class TestCli:
 
 
 class KGlobalAccel:
-    """Just enough of org.kde.KGlobalAccel, recording what arrives over the wire."""
+    """Just enough of org.kde.KGlobalAccel, keyed like the real one: (component, action unique
+    name) from the action id [ComponentUnique, ActionUnique, ComponentFriendly, ActionFriendly]."""
 
     def __init__(self) -> None:
-        self.keys: dict[str, list] = {}
+        self.keys: dict[tuple[str, str], list] = {}
         self.taken: set[int] = set()
 
     def handlers(self):
         return {
             "isGlobalShortcutAvailable": lambda body: ("b", (body[0] not in self.taken,)),
             "doRegister": lambda body: (None, ()),
-            "unregister": lambda body: ("b", (True,)),
+            "unregister": self.unregister,
             "setForeignShortcutKeys": self.set_keys,
-            "shortcutKeys": lambda body: ("a(ai)", (self.keys.get(body[0][0], []),)),
+            "shortcutKeys": lambda body: ("a(ai)", (self.keys.get((body[0][0], body[0][1]), []),)),
         }
 
     def set_keys(self, body):
-        self.keys[body[0][0]] = body[1]
+        self.keys[(body[0][0], body[0][1])] = body[1]
         return None, ()
+
+    def unregister(self, body):
+        return "b", (self.keys.pop((body[0], body[1]), None) is not None,)
 
 
 @pytest.fixture
@@ -410,31 +414,61 @@ class TestJeepney:
         finally:
             bus.close()
         assert all(r.result is Result.INSTALLED for r in reports)
-        assert kglobalaccel.keys["net.local.veil-toggle.desktop"] == [([META_ALT | 0x4B],)]
-        members = [member for member, _ in kglobalaccel.service.calls]
-        assert members[:5] == [
+        # The key is on the _launch action: the one KDE runs the desktop file for.
+        assert kglobalaccel.keys[("net.local.veil-toggle.desktop", "_launch")] == [
+            ([META_ALT | 0x4B],)
+        ]
+        assert all(action == "_launch" for _, action in kglobalaccel.keys)
+        calls = [c for c in kglobalaccel.service.calls if "veil-sanitize" in str(c[1])]
+        assert [member for member, _ in calls] == [
+            "unregister",  # the legacy action, if any
+            "shortcutKeys",
             "isGlobalShortcutAvailable",
             "doRegister",
             "unregister",
             "setForeignShortcutKeys",
             "shortcutKeys",
         ]
-        register = next(
-            body for member, body in kglobalaccel.service.calls if member == "doRegister"
-        )
-        assert register == (
-            ["net.local.veil-sanitize.desktop", "veil: sanitize the clipboard", "", ""],
-        )
 
-    def test_action_id(self, kglobalaccel):
+    def test_action_id_order_matches_kglobalaccel(self, kglobalaccel):
+        # kglobalaccel.h: ComponentUnique = 0, ActionUnique = 1, ComponentFriendly = 2,
+        # ActionFriendly = 3.
         bus = RealJeepneyShortcuts(kglobalaccel.address)
         try:
+            bus.register(TOGGLE)
             bus.set_keys(TOGGLE, [1])
         finally:
             bus.close()
+        member, body = kglobalaccel.service.calls[0]
+        assert member == "doRegister"
+        assert body == ([TOGGLE.component, "", TOGGLE.title, ""],)
         member, body = kglobalaccel.service.calls[-1]
         assert member == "setForeignShortcutKeys"
-        assert body[0] == [TOGGLE.component, TOGGLE.title, "_launch", TOGGLE.title]
+        assert body[0] == [TOGGLE.component, "_launch", TOGGLE.title, TOGGLE.title]
+
+    def test_legacy_action_is_removed(self, kglobalaccel):
+        # What the first M3.3 build left behind: the key on an action named after the title.
+        legacy = (TOGGLE.component, TOGGLE.title)
+        kglobalaccel.keys[legacy] = [([META_ALT | 0x4B],)]
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+        finally:
+            bus.close()
+        assert legacy not in kglobalaccel.keys
+        assert kglobalaccel.keys[(TOGGLE.component, "_launch")] == [([META_ALT | 0x4B],)]
+
+    def test_reinstall_keeps_own_keys(self, kglobalaccel):
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+            # The real service may call our own key "unavailable": it must not matter.
+            kglobalaccel.taken.update(key_code(s.keys) for s in SHORTCUTS)
+            reports = install(bus, lambda: True, COMMAND)
+        finally:
+            bus.close()
+        assert all(r.result is Result.INSTALLED for r in reports)
+        assert all((applications_dir() / s.component).exists() for s in SHORTCUTS)
 
     def test_taken_over_dbus(self, kglobalaccel):
         kglobalaccel.taken.add(key_code("Meta+Alt+E"))
@@ -444,6 +478,16 @@ class TestJeepney:
         finally:
             bus.close()
         assert {r.shortcut.name: r.result for r in reports}["restore"] is Result.TAKEN
+
+    def test_status_over_dbus(self, kglobalaccel):
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+            rows = shortcuts.status(bus)
+        finally:
+            bus.close()
+        assert all(row.ok for row in rows)
+        assert rows[-1].live_keys == ["Meta+Alt+K"]
 
     def test_not_running(self, tmp_path):
         with privatebus.private_bus(tmp_path) as address:
@@ -544,3 +588,70 @@ class TestOverrides:
         code, _, err = cmd(capsys, "install-shortcuts")
         assert code == ExitCode.FINDINGS
         assert "--key NAME=KEYS" in err
+
+
+# ── --status and key names ────────────────────────────────────────────────────
+
+
+class TestStatus:
+    @pytest.mark.parametrize("keys", ["Meta+Alt+V", "Ctrl+Shift+1", "Meta+Ctrl+Alt+Shift+Z"])
+    def test_key_name_round_trip(self, keys):
+        assert shortcuts.key_name(key_code(keys)) == keys
+
+    def test_nothing_installed(self, shortcut_service):
+        rows = shortcuts.status(shortcut_service)
+        assert [r.ok for r in rows] == [False] * 4
+        assert rows[0].file_keys is None
+
+    def test_installed(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        assert all(r.ok for r in shortcuts.status(shortcut_service))
+
+    def test_file_without_live_key(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        shortcut_service.keys_by_component.clear()
+        rows = shortcuts.status(shortcut_service)
+        assert rows[0].file_keys == "Meta+Alt+V"
+        assert rows[0].live_keys == []
+        assert not rows[0].ok
+
+    def test_service_error_counts_as_no_key(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        shortcut_service.fail = {"keys"}
+        assert not any(r.ok for r in shortcuts.status(shortcut_service))
+
+    @pytest.mark.usefixtures("session_bus")
+    def test_cli(self, capsys, shortcut_service):
+        code, out, _ = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.FINDINGS
+        assert out.count("NOT WORKING") == 4
+        cmd(capsys, "install-shortcuts")
+        code, out, _ = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.OK
+        assert out.count(" ok") == 4
+
+    def test_cli_without_bus(self, capsys, monkeypatch):
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        code, _, err = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.FINDINGS
+        assert "only files were checked" in err
+
+    def test_install_drops_legacy_actions(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        assert shortcut_service.dropped == [s.component for s in SHORTCUTS]
+
+    def test_reinstall_with_own_key_taken(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        for shortcut in SHORTCUTS:  # the service says "taken" even for our own key
+            shortcut_service.taken[key_code(shortcut.keys)] = "something-else"
+        reports = install(shortcut_service, lambda: True, COMMAND)
+        assert all(r.result is Result.INSTALLED for r in reports)
+
+
+def test_empty_sequences_are_not_keys(kglobalaccel):
+    kglobalaccel.keys[(TOGGLE.component, "_launch")] = [([0],), ([0, 0, 0, 0],)]
+    bus = RealJeepneyShortcuts(kglobalaccel.address)
+    try:
+        assert bus.keys(TOGGLE) == []
+    finally:
+        bus.close()

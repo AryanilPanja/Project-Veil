@@ -185,6 +185,7 @@ class FakeShortcutService:
         self.taken: dict[int, str] = {}  # key → another component that holds it
         self.registered: list[str] = []
         self.fail: set[str] = set()
+        self.dropped: list[str] = []
         self.closed = 0
 
     def _check(self, name):
@@ -215,6 +216,10 @@ class FakeShortcutService:
     def forget(self, shortcut) -> None:
         self._check("forget")
         self.keys_by_component.pop(shortcut.component, None)
+
+    def drop_legacy(self, shortcut) -> None:
+        self._check("drop_legacy")
+        self.dropped.append(shortcut.component)
 
     def close(self) -> None:
         self.closed += 1

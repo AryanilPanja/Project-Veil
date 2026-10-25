@@ -101,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--print", action="store_true", help="only print the manual steps; change nothing"
     )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="show what is installed and which key KDE really has (read-only)",
+    )
 
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
@@ -389,6 +394,18 @@ def _shortcuts_command(args: argparse.Namespace) -> int:
         if bus is not None and not _bus_running(bus):
             bus.close()
             bus = None
+        if args.status:
+            rows = shortcuts.status(bus)
+            for row in rows:
+                live = ", ".join(row.live_keys) or "none"
+                state = "ok" if row.ok else "NOT WORKING"
+                ui.out(
+                    f"  {row.shortcut.name:<15} file: {row.file_keys or 'missing':<11} "
+                    f"KDE: {live:<11} {state}"
+                )
+            if bus is None:
+                ui.err("veil: KDE's shortcut service isn't reachable; only files were checked")
+            return int(ExitCode.OK if all(r.ok for r in rows) else ExitCode.FINDINGS)
         rebuild = shortcuts.kbuildsycoca()
         if args.remove:
             shortcuts.remove(bus, rebuild)

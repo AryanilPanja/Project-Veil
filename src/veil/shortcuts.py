@@ -198,6 +198,8 @@ class ShortcutBus(Protocol):
 
     def forget(self, shortcut: Shortcut) -> None: ...
 
+    def drop_legacy(self, shortcut: Shortcut) -> None: ...
+
 
 class ShortcutError(Exception):
     """A D-Bus failure (its error name only)."""
@@ -217,9 +219,10 @@ class JeepneyShortcuts:
         return bool(self._method("isGlobalShortcutAvailable", "is", (code, component))[0])
 
     def register(self, shortcut: Shortcut) -> None:
-        # As System Settings does: a dummy action makes the service read the desktop file
-        # (which creates its _launch action); the dummy is then unregistered.
-        self._method("doRegister", "as", ([shortcut.component, shortcut.title, "", ""],))
+        # As System Settings does (globalaccelmodel.cpp addApplication): a dummy action makes
+        # the service build the component from the desktop file, which creates its _launch
+        # action; the dummy is then unregistered.
+        self._method("doRegister", "as", (_action_id(shortcut.component, "", shortcut.title, ""),))
         self._method("unregister", "ss", (shortcut.component, ""))
 
     def set_keys(self, shortcut: Shortcut, codes: list[int]) -> None:
@@ -229,10 +232,16 @@ class JeepneyShortcuts:
 
     def keys(self, shortcut: Shortcut) -> list[int]:
         sequences = self._method("shortcutKeys", "as", (_action(shortcut),))[0]
-        return [sequence[0][0] for sequence in sequences if sequence[0]]
+        # An unset sequence comes back as [0] (or [0, 0, 0, 0]): not a key.
+        return [sequence[0][0] for sequence in sequences if sequence[0] and sequence[0][0]]
 
     def forget(self, shortcut: Shortcut) -> None:
         self.set_keys(shortcut, [])
+
+    def drop_legacy(self, shortcut: Shortcut) -> None:
+        """Remove the action that veil before 2026-10-25 created by mistake (named after the
+        title, with the key, but not runnable): it would keep the key from `_launch`."""
+        self._method("unregister", "ss", (shortcut.component, shortcut.title))
 
     def close(self) -> None:
         if self._connection is not None:
@@ -261,7 +270,15 @@ class JeepneyShortcuts:
 
 
 def _action(shortcut: Shortcut) -> list[str]:
-    return [shortcut.component, shortcut.title, LAUNCH, shortcut.title]
+    """The `_launch` action: the one the service runs the desktop file for."""
+    return _action_id(shortcut.component, LAUNCH, shortcut.title, shortcut.title)
+
+
+def _action_id(component: str, action: str, component_title: str, action_title: str) -> list[str]:
+    # KGlobalAccel::actionIdFields: ComponentUnique = 0, ActionUnique = 1,
+    # ComponentFriendly = 2, ActionFriendly = 3 (kglobalaccel.h). Getting this order wrong
+    # creates an ordinary, never-run action named after the title (the M3.3 owner check).
+    return [component, action, component_title, action_title]
 
 
 # ── install / remove ──────────────────────────────────────────────────────────
@@ -308,7 +325,10 @@ def install(
 def _install_one(bus: ShortcutBus, shortcut: Shortcut) -> Result:
     code = key_code(shortcut.keys)
     try:
-        if not bus.available(code, shortcut.component):
+        with contextlib.suppress(Exception):  # nothing to clean up on a fresh install
+            bus.drop_legacy(shortcut)
+        # Our own _launch holding the key isn't "taken" (re-running the installer).
+        if code not in bus.keys(shortcut) and not bus.available(code, shortcut.component):
             return Result.TAKEN
         bus.register(shortcut)
         bus.set_keys(shortcut, [code])
@@ -324,9 +344,41 @@ def remove(bus: ShortcutBus | None, rebuild: Rebuild) -> list[Report]:
             # Nothing registered, or no service: fine either way.
             with contextlib.suppress(Exception):
                 bus.forget(shortcut)
+            with contextlib.suppress(Exception):
+                bus.drop_legacy(shortcut)
         (folder / shortcut.component).unlink(missing_ok=True)
     rebuild()
     return [Report(shortcut, Result.REMOVED) for shortcut in SHORTCUTS]
+
+
+@dataclass(frozen=True)
+class Status:
+    shortcut: Shortcut
+    file_keys: str | None  # the key its desktop file records, or None (no file)
+    live_keys: list[str]  # what the shortcut service has on its _launch action
+
+    @property
+    def ok(self) -> bool:
+        return self.file_keys is not None and self.live_keys == [self.file_keys]
+
+
+def status(bus: ShortcutBus | None) -> list[Status]:
+    """Read-only: what is installed, per shortcut (`veil install-shortcuts --status`)."""
+    result = []
+    for shortcut in SHORTCUTS:
+        live: list[str] = []
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                live = [key_name(code) for code in bus.keys(shortcut)]
+        result.append(Status(shortcut, installed_keys(shortcut), live))
+    return result
+
+
+def key_name(code: int) -> str:
+    """The inverse of key_code: 0x18000056 → "Meta+Alt+V"."""
+    mods = [m for m in MODIFIER_ORDER if code & MODIFIERS[m]]
+    key = code & ~sum(MODIFIERS.values())
+    return "+".join([*mods, chr(key) if 0x20 < key < 0x7F else f"0x{key:x}"])
 
 
 def _write(path: Path, text: str) -> None:
