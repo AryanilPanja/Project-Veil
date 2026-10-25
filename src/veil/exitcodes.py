@@ -14,5 +14,6 @@ class ExitCode(IntEnum):
     UNSAFE_ENVIRONMENT = 7  # no TTY for a human-only command, bad runtime dir, refused editor…
     ABORTED = 8  # the user cancelled
     STORAGE = 9  # could not write safely: disk full, I/O error (the previous file is unchanged)
+    CLIPBOARD = 10  # no clipboard tool / display, or the tool failed or timed out
     INTERNAL = 70  # unexpected exception (class name only is shown)
     INTERRUPTED = 130  # SIGINT
