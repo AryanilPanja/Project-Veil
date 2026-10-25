@@ -10,6 +10,7 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 - an error → critical, saying whether the clipboard was cleared (M2.5).
 """
 
+from veil import killswitch
 from veil.clip.ask import Decision, describe
 from veil.clip.commands import Action, Outcome, Scrub, Skip
 from veil.clip.history import Forget
@@ -189,6 +190,8 @@ def _line(outcome: Outcome) -> str:
 
 
 def _skipped(action: Action, skip: Skip) -> Message:
+    if skip is Skip.OFF:
+        return _off(action)
     if action is Action.RESTORE:
         return Message("veil: clipboard NOT restored", f"{_sentence(skip.value)}. Left unchanged.")
     if action is Action.FROM_SELECTION:
@@ -206,6 +209,19 @@ def _skipped(action: Action, skip: Skip) -> Message:
         f"{_sentence(skip.value)}. It still holds the original: don't paste it into a chat.",
         Urgency.CRITICAL,
         icon="dialog-warning",
+    )
+
+
+def _off(action: Action) -> Message:
+    """The kill switch is OFF (spec §4.2 step 1): nothing was touched."""
+    back = killswitch.SWITCH_BACK
+    if action is Action.RESTORE:
+        return Message("veil is OFF: nothing restored", f"The clipboard is unchanged.\n{back}")
+    return Message(
+        "veil is OFF: clipboard NOT sanitized",
+        f"It still holds what you copied: don't paste it into a chat.\n{back}",
+        Urgency.CRITICAL,
+        icon="security-low",
     )
 
 

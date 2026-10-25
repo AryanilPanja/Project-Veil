@@ -10,7 +10,7 @@ from pathlib import Path
 
 import veil
 from veil import hardening, paths, ui
-from veil.errors import VeilError
+from veil.errors import Aborted, VeilError
 from veil.exitcodes import ExitCode
 
 
@@ -55,6 +55,27 @@ def build_parser() -> argparse.ArgumentParser:
             help="no desktop notification (stderr only); a sensitive detail is then asked "
             "about in the terminal, or denied without one",
         )
+
+    commands.add_parser("on", help="switch veil back ON (the kill switch)")
+    off = commands.add_parser(
+        "off",
+        help="HUMAN-ONLY: switch veil OFF; clipboard hotkeys stop sanitizing "
+        "(asks you to type 'off')",
+    )
+    toggle = commands.add_parser(
+        "toggle", help="HUMAN-ONLY: OFF if on (asks you to type 'off'), ON if off"
+    )
+    for cmd in (off, toggle):
+        cmd.add_argument(
+            "--for",
+            dest="duration",
+            type=_duration,
+            metavar="DURATION",
+            help="switch back ON automatically after this long (e.g. 30m, 2h; up to 24h)",
+        )
+    commands.add_parser("status", help="ON or OFF (exit 0 = on, 3 = off)")
+    timer = commands.add_parser("kill-switch-timer")  # run by systemd timers; not listed
+    timer.add_argument("event", choices=("expire", "remind"))
 
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
@@ -141,6 +162,8 @@ def run(argv: Sequence[str] | None) -> int:
     args = parser.parse_args(argv)
     if args.command in ("translate", "reverse", "audit"):
         return _text_command(args)
+    if args.command in ("on", "off", "toggle", "status", "kill-switch-timer"):
+        return _switch_command(args)
     if args.command == "clip" and args.clip_command:
         return _clip_command(args)
     if args.command == "clip":
@@ -251,6 +274,58 @@ def _text_command(args: argparse.Namespace) -> int:
     return command[args.command](load, args.file)
 
 
+def _duration(text: str):
+    from veil.killswitch import parse_duration
+
+    try:
+        return parse_duration(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _switch_command(args: argparse.Namespace) -> int:
+    """The kill switch (ADR-0018). OFF only ever by a human at a terminal (typed 'off')."""
+    from veil import killswitch
+    from veil.clip import notify
+
+    config, now = paths.config_dir(), killswitch.utc_now()
+    reading = killswitch.read(config)
+    if reading.problem:
+        ui.err(f"veil: warning: {reading.problem}")
+    if args.command == "status":
+        ui.out(killswitch.status_line(reading, now))
+        return int(ExitCode.OFF if reading.switch.is_off(now) else ExitCode.OK)
+    timers = killswitch.detect_timers()
+    if args.command == "kill-switch-timer":
+        message = killswitch.on_timer(args.event, config, timers, now)
+        if message is not None:
+            notify.detect().notify(message)
+        return int(ExitCode.OK)
+    turn_off = args.command == "off" or (
+        args.command == "toggle" and not reading.switch.is_off(now)
+    )
+    if not turn_off:
+        was_off = reading.switch.is_off(now)
+        killswitch.switch_on(config, timers)
+        ui.out("veil: ON" if was_off or reading.problem else "veil: ON (it already was)")
+        if was_off:
+            notify.detect().notify(killswitch.on_message())
+        return int(ExitCode.OK)
+    if not ui.confirm_typed(
+        "Switch veil OFF? Clipboard hotkeys will stop sanitizing copied text.", "off"
+    ):
+        raise Aborted("not switched off (confirmation not given); veil stays ON")
+    switch, scheduled = killswitch.switch_off(config, timers, now, args.duration)
+    ui.out(killswitch.status_line(killswitch.Reading(switch), now))
+    if not scheduled:
+        ui.err(
+            "veil: warning: couldn't schedule the reminder/expiry notifications "
+            "(systemd user timers); veil still switches back ON on time when it's next used"
+        )
+    notify.detect().notify(killswitch.off_message(switch, now))
+    return int(ExitCode.OK)
+
+
 def _clip_command(args: argparse.Namespace) -> int:
     from veil.clip import commands, history, messages, notify
     from veil.clip.io import detect
@@ -261,6 +336,20 @@ def _clip_command(args: argparse.Namespace) -> int:
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
+    off = _switched_off()
+    if off:
+        action = {
+            "sanitize": commands.Action.SANITIZE,
+            "from-selection": commands.Action.FROM_SELECTION,
+        }
+        outcome = commands.Outcome(
+            action.get(args.clip_command, commands.Action.RESTORE), commands.Skip.OFF
+        )
+        for line in messages.stderr_lines(outcome):
+            ui.err(line)
+        if not args.no_notify:
+            notify.detect().notify(messages.notification(outcome))
+        return int(ExitCode.OK)
     board = None
     try:
         board = detect()
@@ -284,6 +373,16 @@ def _clip_command(args: argparse.Namespace) -> int:
         notify.detect().notify(messages.notification(outcome))
     STAGES.report()
     return int(ExitCode.OK)
+
+
+def _switched_off() -> bool:
+    """The kill switch, for the clip commands. An unreadable state file means ON (warned)."""
+    from veil import killswitch
+
+    reading = killswitch.read(paths.config_dir())
+    if reading.problem:
+        ui.err(f"veil: warning: {reading.problem}")
+    return reading.switch.is_off(killswitch.utc_now())
 
 
 def _asker(no_notify: bool):
