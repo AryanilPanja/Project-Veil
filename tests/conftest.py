@@ -58,6 +58,27 @@ def _no_real_keyring(monkeypatch):
     monkeypatch.setattr(keystore, "secret_service_backend", forbidden)
 
 
+class RecordingNotifier:
+    """Stands in for notify-send: records each Message instead of showing it."""
+
+    def __init__(self) -> None:
+        self.messages: list = []
+
+    def notify(self, message) -> bool:
+        self.messages.append(message)
+        return True
+
+
+@pytest.fixture(autouse=True)
+def notifications(monkeypatch):
+    """No test may pop up a real desktop notification. Returns what would have been shown."""
+    from veil.clip import notify
+
+    recorder = RecordingNotifier()
+    monkeypatch.setattr(notify, "detect", lambda *a, **k: recorder)
+    return recorder.messages
+
+
 @pytest.fixture
 def hardening_calls(_no_process_hardening_in_test_process):
     """Records each call to `veil.hardening.apply` made during the test."""

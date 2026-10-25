@@ -109,26 +109,3 @@ def _skip(kind: Kind, secret: bool, source: Selection) -> Skip | None:
     if secret:
         return Skip.SECRET
     return None
-
-
-def summary(outcome: Outcome) -> str:
-    """One value-free line: the action, and counts per category."""
-    if outcome.skipped is not None:
-        verb = "restored" if outcome.action is Action.RESTORE else "sanitized"
-        return f"veil: clipboard NOT {verb}: {outcome.skipped.value}; left unchanged"
-    by_kind = sorted(outcome.replaced.items(), key=lambda item: (-item[1], item[0]))
-    detail = f" ({', '.join(f'{kind} {n}' for kind, n in by_kind)})" if by_kind else ""
-    if outcome.action is Action.RESTORE:
-        return f"veil: restored {outcome.total} detail(s){detail}"
-    found = f"{outcome.total} replacement(s){detail}" if outcome.total else "no personal details"
-    source = " from the selection" if outcome.action is Action.FROM_SELECTION else ""
-    return f"veil: sanitized{source}: {found}; clipboard holds plain text only"
-
-
-def warnings(outcome: Outcome) -> list[str]:
-    if outcome.preexisting_fakes:
-        return [
-            f"veil: warning: the text already contained {outcome.preexisting_fakes} fake form(s); "
-            "restore can't tell them apart from translated ones"
-        ]
-    return []

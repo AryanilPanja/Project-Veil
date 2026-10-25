@@ -48,7 +48,10 @@ def build_parser() -> argparse.ArgumentParser:
         ("from-selection", "real → fake: the highlighted text (PRIMARY) into the clipboard"),
         ("restore", "HUMAN-ONLY: fake → real in the clipboard (it then holds your real details)"),
     ):
-        clip_commands.add_parser(name, help=help_text)
+        clip_cmd = clip_commands.add_parser(name, help=help_text)
+        clip_cmd.add_argument(
+            "--no-notify", action="store_true", help="no desktop notification (stderr only)"
+        )
 
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
@@ -246,7 +249,7 @@ def _text_command(args: argparse.Namespace) -> int:
 
 
 def _clip_command(args: argparse.Namespace) -> int:
-    from veil.clip import commands
+    from veil.clip import commands, messages, notify
     from veil.clip.io import detect
     from veil.engine.load import load_engine
     from veil.timing import STAGES
@@ -261,9 +264,10 @@ def _clip_command(args: argparse.Namespace) -> int:
         "restore": commands.restore,
     }
     outcome = command[args.clip_command](detect(), load)
-    ui.err(commands.summary(outcome))
-    for warning in commands.warnings(outcome):
-        ui.err(warning)
+    for line in messages.stderr_lines(outcome):
+        ui.err(line)
+    if not args.no_notify:
+        notify.detect().notify(messages.notification(outcome))
     STAGES.report()
     return int(ExitCode.OK)
 
