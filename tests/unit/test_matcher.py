@@ -306,3 +306,48 @@ def test_property_ascii_mapping_fast_path_equals_general(text, data):
         start = data.draw(st.integers(0, len(text) - 1))
         end = data.draw(st.integers(start + 1, len(text)))
         assert fast.to_raw(start, end) == general.to_raw(start, end)
+
+
+# ── counted translation (M2.2: per-category counts for notifications) ─────────
+
+
+class TestCounted:
+    @given(
+        st.lists(
+            st.sampled_from(
+                [
+                    "Jane",
+                    "Doe",
+                    "jane.doe@xyz.example.test",
+                    "XYZIT",
+                    " ",
+                    "x",
+                    "\n",
+                    "জেন",
+                    "Alex Smith",
+                ]
+            ),
+            max_size=20,
+        )
+    )
+    def test_counted_matches_plain_and_find(self, engine, parts):
+        text = "".join(parts)
+        for matcher in (engine.forward_matcher, engine.reverse_matcher):
+            out, counts = matcher.apply_counted(text)
+            found = matcher.find(text)
+            assert out == matcher.apply(text)
+            assert sum(counts.values()) == len(found)
+            assert all(n > 0 for n in counts.values())
+            assert set(counts) == {m.form.entity.kind.value for m in found}
+
+    def test_engine_counted_directions(self, engine):
+        out, counts = engine.forward_counted("Jane Doe, jane.doe@xyz.example.test")
+        assert out == engine.forward("Jane Doe, jane.doe@xyz.example.test")
+        assert counts == {"name": 1, "email": 1}
+        back, rcounts = engine.reverse_counted(out)
+        assert back == "Jane Doe, jane.doe@xyz.example.test"
+        assert rcounts == counts
+
+    def test_counts_hold_kinds_only(self, engine):
+        _, counts = engine.forward_counted("Jane Doe")
+        assert all(k.isascii() and "jane" not in k.lower() for k in counts)

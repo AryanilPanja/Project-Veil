@@ -138,14 +138,21 @@ class Matcher:
         return chosen
 
     def apply(self, raw: str) -> str:
+        return self.apply_counted(raw)[0]
+
+    def apply_counted(self, raw: str) -> tuple[str, dict[str, int]]:
+        """The rewritten text, and the number of replacements per entity kind."""
         out: list[str] = []
+        counts: dict[str, int] = {}
         cursor = 0
         for m in self.find(raw):
             out.append(raw[cursor : m.start])
             out.append(m.replacement)
             cursor = m.end
+            kind = m.form.entity.kind.value
+            counts[kind] = counts.get(kind, 0) + 1
         out.append(raw[cursor:])
-        return "".join(out)
+        return "".join(out), counts
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +181,13 @@ class Engine:
 
     def reverse(self, text: str) -> str:
         return self.reverse_matcher.apply(text)
+
+    def forward_counted(self, text: str) -> tuple[str, dict[str, int]]:
+        """forward(), plus replacements per entity kind (for value-free notifications)."""
+        return self.forward_matcher.apply_counted(text)
+
+    def reverse_counted(self, text: str) -> tuple[str, dict[str, int]]:
+        return self.reverse_matcher.apply_counted(text)
 
     def audit(self, text: str) -> list["AuditHit"]:
         """Every real form in `text` (context guards ignored: an audit must be conservative).
