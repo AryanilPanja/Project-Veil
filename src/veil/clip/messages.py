@@ -214,7 +214,7 @@ def _skipped(action: Action, skip: Skip) -> Message:
 
 def _off(action: Action) -> Message:
     """The kill switch is OFF (spec §4.2 step 1): nothing was touched."""
-    back = killswitch.SWITCH_BACK
+    back = killswitch.switch_back()
     if action is Action.RESTORE:
         return Message("veil is OFF: nothing restored", f"The clipboard is unchanged.\n{back}")
     return Message(

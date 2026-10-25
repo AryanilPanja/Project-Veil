@@ -296,6 +296,16 @@ def _local(moment: datetime | None) -> str:
 SWITCH_BACK = "Run `veil on` to switch back."
 
 
+def switch_back() -> str:
+    """How to switch back ON: with the hotkey only once `veil install-shortcuts` set it up."""
+    from veil import shortcuts
+
+    keys = shortcuts.installed_keys(shortcuts.TOGGLE)
+    if keys:
+        return f"Run `veil on` or press {keys} to switch back."
+    return SWITCH_BACK
+
+
 def off_message(switch: Switch, now: datetime) -> Message:
     when = (
         f"Back ON at {_local(switch.until)} ({describe_duration(switch.until - now)})."
@@ -304,7 +314,7 @@ def off_message(switch: Switch, now: datetime) -> Message:
     )
     return Message(
         "veil is OFF",
-        f"Clipboard hotkeys do nothing: copied text is NOT sanitized.\n{when}\n{SWITCH_BACK}",
+        f"Clipboard hotkeys do nothing: copied text is NOT sanitized.\n{when}\n{switch_back()}",
         Urgency.CRITICAL,
         icon="security-low",
     )
@@ -319,7 +329,7 @@ def reminder_message(switch: Switch, now: datetime) -> Message:
     since = describe_duration(now - switch.since) if switch.since else "a while"
     return Message(
         "veil is still OFF",
-        f"Off for {since}: copied text is NOT sanitized.\n{SWITCH_BACK}",
+        f"Off for {since}: copied text is NOT sanitized.\n{switch_back()}",
         Urgency.CRITICAL,
         icon="security-low",
     )

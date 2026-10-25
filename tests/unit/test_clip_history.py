@@ -5,15 +5,14 @@ moves to the top), and a fake history service on a private dbus-daemon for the j
 conftest's autouse `clip_history` fixture keeps every CLI test off the real session bus.
 """
 
-import shutil
-import subprocess
-import threading
+import contextlib
 from pathlib import Path
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
+from tests.helpers import privatebus
 from tests.helpers.fakeclip import FakeBoard
 from tests.unit.test_clip_commands import FAKE, REAL, REALS, Loader, assert_no_reals, run
 from tests.unit.test_clip_commands import board as board
@@ -348,103 +347,41 @@ def test_detect_without_session_bus():
 
 # ── jeepney against a private bus (never the session bus) ─────────────────────
 
-CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:path={path}</listen>
-  <auth>EXTERNAL</auth>
-  <policy context="default">
-    <allow send_destination="*"/>
-    <allow receive_sender="*"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-"""
-
 
 @pytest.fixture
 def private_bus(tmp_path):
-    daemon = shutil.which("dbus-daemon")
-    if daemon is None:
-        pytest.skip("dbus-daemon not installed")
-    config = tmp_path / "bus.conf"
-    config.write_text(CONFIG.format(path=tmp_path / "bus"), encoding="utf-8")
-    proc = subprocess.Popen(
-        [daemon, f"--config-file={config}", "--nofork", "--print-address"],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        address = proc.stdout.readline().strip()
-        assert address.startswith("unix:")
+    with privatebus.private_bus(tmp_path) as address:
         yield address
-    finally:
-        proc.terminate()
-        proc.wait(timeout=5)
-        proc.stdout.close()
-
-
-class FakeService(threading.Thread):
-    """A history service on the private bus, backed by FakeHistory."""
-
-    def __init__(self, address: str, entries) -> None:
-        super().__init__(daemon=True)
-        from jeepney import message_bus
-        from jeepney.io.blocking import open_dbus_connection
-
-        self.store = FakeHistory(entries)
-        self.stop = threading.Event()
-        self.connection = open_dbus_connection(address)
-        self.connection.send_and_get_reply(message_bus.RequestName(SERVICE))
-
-    def run(self) -> None:
-        from jeepney import HeaderFields, MessageType, new_error, new_method_return
-
-        while not self.stop.is_set():
-            try:
-                message = self.connection.receive(timeout=0.1)
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-            header = message.header
-            if header.message_type is not MessageType.method_call:
-                continue
-            member = header.fields.get(HeaderFields.member)
-            if header.fields.get(HeaderFields.interface) != INTERFACE:
-                continue
-            if member == "getClipboardHistoryMenu":
-                reply = new_method_return(message, "as", (self.store.entries(),))
-            elif member == "clearClipboardHistory":
-                self.store.clear()
-                reply = new_method_return(message)
-            elif member == "setClipboardContents":
-                self.store.add(message.body[0])
-                reply = new_method_return(message)
-            else:
-                reply = new_error(message, "org.freedesktop.DBus.Error.UnknownMethod")
-            self.connection.send(reply)
-
-    def close(self) -> None:
-        self.stop.set()
-        self.join(timeout=2)
-        self.connection.close()
 
 
 @pytest.fixture
 def service(private_bus):
-    started = []
+    """A fake history service on the private bus, backed by FakeHistory."""
+    with contextlib.ExitStack() as stack:
 
-    def start(entries):
-        svc = FakeService(private_bus, entries)
-        svc.start()
-        started.append(svc)
-        return svc
+        def start(entries):
+            store = FakeHistory(entries)
 
-    yield start
-    for svc in started:
-        svc.close()
+            def clear(body):
+                store.clear()
+                return None, ()
+
+            def add(body):
+                store.add(body[0])
+                return None, ()
+
+            handlers = {
+                "getClipboardHistoryMenu": lambda body: ("as", (store.entries(),)),
+                "clearClipboardHistory": clear,
+                "setClipboardContents": add,
+            }
+            svc = stack.enter_context(
+                privatebus.fake_service(private_bus, SERVICE, INTERFACE, handlers)
+            )
+            svc.store = store
+            return svc
+
+        yield start
 
 
 class TestJeepneyBus:

@@ -5,6 +5,7 @@
 """
 
 import argparse
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -82,6 +83,24 @@ def build_parser() -> argparse.ArgumentParser:
     commands.add_parser("status", help="ON or OFF (exit 0 = on, 3 = off)")
     timer = commands.add_parser("kill-switch-timer")  # run by systemd timers; not listed
     timer.add_argument("event", choices=("expire", "remind"))
+
+    shortcuts = commands.add_parser(
+        "install-shortcuts",
+        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/R/K) as System Settings would",
+    )
+    shortcuts.add_argument(
+        "--key",
+        action="append",
+        default=[],
+        metavar="NAME=KEYS",
+        help="use another key, e.g. --key restore=Meta+Alt+E (names: sanitize, "
+        "from-selection, restore, toggle; repeatable)",
+    )
+    mode = shortcuts.add_mutually_exclusive_group()
+    mode.add_argument("--remove", action="store_true", help="remove veil's hotkeys again")
+    mode.add_argument(
+        "--print", action="store_true", help="only print the manual steps; change nothing"
+    )
 
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
@@ -168,6 +187,8 @@ def run(argv: Sequence[str] | None) -> int:
     args = parser.parse_args(argv)
     if args.command in ("translate", "reverse", "audit"):
         return _text_command(args)
+    if args.command == "install-shortcuts":
+        return _shortcuts_command(args)
     if args.command in ("on", "off", "toggle", "status", "kill-switch-timer"):
         return _switch_command(args)
     if args.command == "clip" and args.clip_command:
@@ -341,6 +362,68 @@ def _switch_command(args: argparse.Namespace) -> int:
         )
     notify.detect().notify(killswitch.off_message(switch, now))
     return int(ExitCode.OK)
+
+
+def _shortcuts_command(args: argparse.Namespace) -> int:
+    """KDE Plasma 6 hotkeys (spec §4.1, ADR-0023 amendment 3)."""
+    from veil import shortcuts
+
+    overrides = {}
+    for item in args.key:
+        name, sep, keys = item.partition("=")
+        if not sep or not keys.strip():
+            raise VeilError(
+                "--key needs NAME=KEYS, e.g. restore=Meta+Alt+E", exit_code=ExitCode.USAGE
+            )
+        overrides[name.strip()] = keys
+    try:
+        chosen = shortcuts.with_keys(overrides)
+    except (ValueError, KeyError) as exc:
+        raise VeilError(f"--key: {exc}", exit_code=ExitCode.USAGE) from None
+    if args.print:
+        for line in shortcuts.manual_steps(chosen=chosen):
+            ui.out(line)
+        return int(ExitCode.OK)
+    bus = shortcuts.JeepneyShortcuts() if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else None
+    try:
+        if bus is not None and not _bus_running(bus):
+            bus.close()
+            bus = None
+        rebuild = shortcuts.kbuildsycoca()
+        if args.remove:
+            shortcuts.remove(bus, rebuild)
+            ui.out("veil: hotkeys removed")
+            return int(ExitCode.OK)
+        if bus is None:
+            ui.err(
+                "veil: KDE's shortcut service isn't running (not a Plasma session?). "
+                "Set them up by hand:"
+            )
+            for line in shortcuts.manual_steps(chosen=chosen):
+                ui.err(line)
+            return int(ExitCode.UNSAFE_ENVIRONMENT)
+        reports = shortcuts.install(bus, rebuild, chosen=chosen)
+    finally:
+        if bus is not None:
+            bus.close()
+    for report in reports:
+        ui.out(f"  {report.shortcut.keys:<11} {report.result.value:<18} {report.shortcut.title}")
+    missing = [r for r in reports if r.result is not shortcuts.Result.INSTALLED]
+    if missing:
+        ui.err(
+            f"veil: {len(missing)} hotkey(s) not set up. Choose another key with "
+            "`veil install-shortcuts --key NAME=KEYS` (e.g. --key restore=Meta+Alt+E), "
+            "or add them by hand (`veil install-shortcuts --print`)."
+        )
+        return int(ExitCode.FINDINGS)
+    return int(ExitCode.OK)
+
+
+def _bus_running(bus) -> bool:
+    try:
+        return bus.running()
+    except Exception:  # noqa: BLE001 - no usable session bus
+        return False
 
 
 def _clip_command(args: argparse.Namespace) -> int:
