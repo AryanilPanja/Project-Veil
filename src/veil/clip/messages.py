@@ -14,6 +14,7 @@ from veil.clip.ask import Decision, describe
 from veil.clip.commands import Action, Outcome, Scrub, Skip
 from veil.clip.history import Forget
 from veil.clip.notify import Message, Urgency
+from veil.engine import residue
 from veil.errors import VeilError
 
 LABELS = {
@@ -73,6 +74,9 @@ def stderr_lines(outcome: Outcome) -> list[str]:
     history = HISTORY_LINES.get(outcome.history)
     if history:
         lines.append(history)
+    leftover = residue.warning(outcome.residue)
+    if leftover:
+        lines.append(leftover)
     if outcome.preexisting_fakes:
         lines.append(
             f"veil: warning: the text already contained {outcome.preexisting_fakes} fake "
@@ -91,11 +95,15 @@ def notification(outcome: Outcome) -> Message:
         return _skipped(outcome.action, outcome.skipped)
     detail = categories(outcome.replaced)
     if outcome.action is Action.RESTORE:
+        leftover = sum(outcome.residue.values())
+        note = f"\nCheck: {leftover} leftover fake-name piece(s) not restored." if leftover else ""
         if not outcome.total:
-            return Message("veil: nothing to restore", "No fake details found. Plain text only.")
+            return Message(
+                "veil: nothing to restore", f"No fake details found. Plain text only.{note}"
+            )
         return Message(
             f"veil: {outcome.total} restored",
-            f"{detail}\nThe clipboard now holds your real details.",
+            f"{detail}\nThe clipboard now holds your real details.{note}",
         )
     where = "selection sanitized" if outcome.action is Action.FROM_SELECTION else "sanitized"
     found = f"{outcome.total} replaced" if outcome.total else "no personal details found"
