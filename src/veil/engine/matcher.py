@@ -18,9 +18,11 @@ of "ﬁ") is rejected, so veil never edits half of a character.
 
 import unicodedata
 from dataclasses import dataclass
+from functools import cached_property
 
 from veil.engine.context import Distances, context_near, overlaps_any
 from veil.engine.forms import Form, Lexicon, raw_whitespace
+from veil.engine.residue import NAME_KINDS, Residue
 from veil.text.aho import PatternIndex
 from veil.text.containment import PreparedText
 
@@ -139,6 +141,12 @@ class Matcher:
             cursor = hit.end
         return chosen
 
+    def protected(self, raw: str) -> list[tuple[int, int]]:
+        """Raw spans of the never_translate / never_reverse phrases in `raw`."""
+        mapped = Mapped(raw)
+        spans = (mapped.to_raw(h.start, h.end) for h in self._protected.find(mapped.prepared))
+        return [span for span in spans if span is not None]
+
     def apply(self, raw: str) -> str:
         return self.apply_counted(raw)[0]
 
@@ -224,6 +232,18 @@ class Engine:
             entity = match.form.entity
             hits.append(AuditHit(line, column, entity.sources[0], entity.kind.value))
         return hits
+
+    @cached_property
+    def _residue(self) -> Residue:
+        return Residue(self.lexicon.reverse)
+
+    def residue(self, text: str) -> dict[str, int]:
+        """Pieces of fake person names in fake-side `text` that reverse leaves unrestored
+        (M2.7, residue.py): counts per entity kind, never which ones."""
+        matches = self.reverse_matcher.find(text)
+        covered = [(m.start, m.end) for m in matches] + self.reverse_matcher.protected(text)
+        names = [(m.start, m.end) for m in matches if m.form.entity.kind in NAME_KINDS]
+        return self._residue.count(text, covered, names)
 
     def ambiguous(self, text: str) -> dict[str, int]:
         """Fake forms already present in real input, by entity id → count (spec §5.5, §5.7).

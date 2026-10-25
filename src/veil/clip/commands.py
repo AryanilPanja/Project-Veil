@@ -76,6 +76,7 @@ class Outcome:
     decision: Decision | None = None  # set when the user was asked
     generalized: int = 0  # spans replaced by their generalized phrase
     history: Forget | None = None  # removing the original from the clipboard history (M2.6)
+    residue: dict[str, int] = field(default_factory=dict)  # restore: fake-name leftovers (M2.7)
 
     @property
     def changed(self) -> bool:
@@ -112,11 +113,14 @@ def restore(board: Clipboard, load: EngineLoader) -> Outcome:
     skipped = _skip(content.kind, content.secret, Selection.CLIPBOARD)
     if skipped is not None:
         return Outcome(Action.RESTORE, skipped)
-    out, counts = load().reverse_counted(content.text or "")
+    engine = load()
+    text = content.text or ""
+    out, counts = engine.reverse_counted(text)
+    residue = engine.residue(text)
     STAGES.mark("reverse")
     board.write_text(out)
     STAGES.mark("write")
-    return Outcome(Action.RESTORE, replaced=counts)
+    return Outcome(Action.RESTORE, replaced=counts, residue=residue)
 
 
 def _forward(

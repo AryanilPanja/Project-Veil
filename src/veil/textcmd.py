@@ -16,6 +16,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from veil import ui
+from veil.engine import residue
 from veil.engine.matcher import Engine
 from veil.exitcodes import ExitCode
 from veil.timing import STAGES
@@ -43,9 +44,13 @@ def translate(load: EngineLoader, path: Path | None) -> int:
 
 def reverse(load: EngineLoader, path: Path | None) -> int:
     text = ui.read_input(path, MAX_INPUT_BYTES)
-    out = load().reverse(text)
+    engine = load()
+    out = engine.reverse(text)
+    leftover = residue.warning(engine.residue(text))
     STAGES.mark("reverse")
     ui.write(out)
+    if leftover:
+        ui.err(leftover)
     STAGES.report()
     return int(ExitCode.OK)
 
