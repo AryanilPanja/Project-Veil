@@ -5,6 +5,7 @@ NFKC text, so case transitions like `janeResume` stay visible. M0 uses the naive
 Aho-Corasick index and keeps this one as the test oracle.
 """
 
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -39,12 +40,21 @@ class PreparedText:
         return prepared
 
 
+@functools.lru_cache(maxsize=16384)
+def prepared(text: str) -> PreparedText:
+    """A cached PreparedText: validation and lexicon building prepare the same forms many times.
+
+    PreparedText is never mutated after construction, so sharing instances is safe.
+    """
+    return PreparedText(text)
+
+
 def find_bounded(needle: str, haystack: str | PreparedText) -> list[Span]:
     """All bounded occurrences of `needle` in `haystack`, in order (they may overlap)."""
     target = canon(needle)
     if not target:
         return []
-    hay = haystack if isinstance(haystack, PreparedText) else PreparedText(haystack)
+    hay = haystack if isinstance(haystack, PreparedText) else prepared(haystack)
     spans: list[Span] = []
     pos = hay.folded.find(target)
     while pos != -1:

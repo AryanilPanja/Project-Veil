@@ -12,8 +12,8 @@ dependencies = [
     "pydantic>=2.12,<3",
     "pyyaml>=6.0.2",
     "pyrage>=1.4,<2",
-    "keyring>=25.6",
     "pyahocorasick>=2.1",
+    "secretstorage>=3.3",
 ]
 
 [project.scripts]

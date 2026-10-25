@@ -11,7 +11,7 @@ from __future__ import annotations  # sys.UnraisableHookArgs exists only for typ
 
 import contextlib
 import ctypes
-import ctypes.util
+import functools
 import os
 import resource
 import sys
@@ -83,13 +83,21 @@ def _set_non_dumpable() -> bool:
     return is_dumpable() is False
 
 
+@functools.cache
 def _libc() -> ctypes.CDLL | None:
+    """The C library already loaded into this process (for prctl), or None.
+
+    `CDLL(None)` opens the process's own symbol table, which on Linux includes glibc. That avoids
+    `ctypes.util.find_library`, which costs ~10 ms (it may spawn ldconfig) plus ~35 ms to import,
+    on every veil start.
+    """
     if not sys.platform.startswith("linux"):
         return None
     try:
-        return ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+        libc = ctypes.CDLL(None, use_errno=True)
     except OSError:
         return None
+    return libc if hasattr(libc, "prctl") else None
 
 
 def _redacting_excepthook(

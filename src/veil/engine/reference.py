@@ -3,7 +3,7 @@
 Semantics (spec v0.2 §5.3), deliberately naive:
 - candidates: every bounded occurrence of every form (M0 `find_bounded`, case-insensitive);
 - a form whose entity has `contexts` counts only if a context keyword occurs (bounded) within
-  the entity's window (context.py);
+  the entity's window, measured in length-independent units (context.py);
 - a candidate overlapping an occurrence of a `never_translate` (forward) or `never_reverse`
   (reverse) phrase is skipped ("Thakur" inside "Anurag Thakur" stays);
 - a candidate that would split a base character from its combining marks is skipped;
@@ -17,7 +17,7 @@ spans back to the raw input instead, so it never normalizes untouched text.
 import unicodedata
 from dataclasses import dataclass
 
-from veil.engine.context import context_near, overlaps_any
+from veil.engine.context import Distances, context_near, overlaps_any
 from veil.engine.lexicon import Form, Lexicon
 from veil.text.containment import PreparedText, find_bounded
 
@@ -48,10 +48,22 @@ def matches(text: str, forms: tuple[Form, ...], skip: frozenset[str]) -> tuple[s
                 continue
             if _splits_cluster(prepared.text, span.start, span.end):
                 continue  # never edit half of a base character + combining marks
-            if not context_near(prepared.text, span.start, span.end, form.entity):
-                continue
             candidates.append(Match(span.start, span.end, form))
     candidates.sort(key=lambda m: (m.start, -(m.end - m.start)))
+    # Context guards, measured in units over the spans the unguarded forms replace.
+    unguarded: list[tuple[int, int]] = []
+    cursor = 0
+    for m in candidates:
+        if not m.form.entity.contexts and m.start >= cursor:
+            unguarded.append((m.start, m.end))
+            cursor = m.end
+    distances = Distances(len(prepared.text), unguarded)
+    found: dict[str, list] = {}
+    candidates = [
+        m
+        for m in candidates
+        if context_near(prepared, m.start, m.end, m.form.entity, distances, found)
+    ]
     chosen: list[Match] = []
     cursor = 0
     for m in candidates:

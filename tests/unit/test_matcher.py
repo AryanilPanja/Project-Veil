@@ -68,7 +68,16 @@ class TestMapped:
     def test_leading_combining_mark(self):
         m = Mapped(ACUTE + "a")
         assert m.raw == ACUTE + "a"
-        assert len(m.clusters) == 2
+        assert m.to_raw(0, 1) is None  # a span starting on a mark would split a cluster
+        assert m.to_raw(1, 2) == (1, 2)
+
+    def test_normalized_text_with_marks_uses_identity_but_never_splits(self):
+        text = "Janq" + ACUTE + " Doe"  # q + acute has no precomposed form: already NFKC
+        m = Mapped(text)
+        assert m.identity
+        assert m.to_raw(0, 4) is None  # "Janq" would leave its accent behind
+        assert m.to_raw(0, 5) == (0, 5)
+        assert m.to_raw(6, 9) == (6, 9)
 
     def test_empty(self):
         m = Mapped("")
@@ -268,3 +277,32 @@ def test_property_normalizing_the_output_gives_the_reference(lex, engine, parts)
     assert unicodedata.normalize("NFKC", out) == unicodedata.normalize(
         "NFKC", reference.forward(text, lex)
     )
+
+
+@settings(max_examples=300)
+@given(st.text(alphabet=[chr(i) for i in range(32, 127)] + ["\n", "\t"], max_size=60), st.data())
+def test_property_ascii_mapping_fast_path_equals_general(text, data):
+    """Mapped's ASCII fast path must map spans exactly like the general cluster mapping."""
+    fast = Mapped(text)
+    general = Mapped.__new__(Mapped)
+    general.raw = text
+    general.identity = False
+    general.clusters, general.cluster_of = [], []
+    pieces = []
+    for raw_start, raw_end in __import__("veil.engine.matcher", fromlist=["_clusters"])._clusters(
+        text
+    ):
+        piece = unicodedata.normalize("NFKC", text[raw_start:raw_end])
+        general.clusters.append(
+            (raw_start, raw_end, len("".join(pieces)), len("".join(pieces)) + len(piece))
+        )
+        general.cluster_of.extend([len(general.clusters) - 1] * len(piece))
+        pieces.append(piece)
+    from veil.text.containment import PreparedText
+
+    general.prepared = PreparedText.from_normalized("".join(pieces))
+    assert fast.text == general.text
+    if text:
+        start = data.draw(st.integers(0, len(text) - 1))
+        end = data.draw(st.integers(start + 1, len(text)))
+        assert fast.to_raw(start, end) == general.to_raw(start, end)

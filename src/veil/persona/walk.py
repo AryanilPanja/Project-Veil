@@ -14,9 +14,9 @@ Not walked: advisor.title (template material, not an identity), footprint.profil
 
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from enum import StrEnum
 
 from veil.persona.fieldpath import child, item
+from veil.persona.model import EntityKind
 from veil.persona.policy import Policy
 from veil.persona.schema import (
     Advisor,
@@ -29,29 +29,6 @@ from veil.persona.schema import (
     Pet,
     YearOfStudy,
 )
-
-
-class EntityKind(StrEnum):
-    NAME = "name"  # the owner's own names
-    PERSON_NAME = "person_name"  # other people: family, friends, advisor, manager
-    EMAIL = "email"
-    PHONE = "phone"
-    USERNAME = "username"
-    HANDLE = "handle"
-    ORG = "org"
-    DOMAIN = "domain"
-    PLACE = "place"
-    ADDRESS = "address"
-    POSTAL_CODE = "postal_code"
-    PATH = "path"
-    HOSTNAME = "hostname"
-    IDENTIFIER = "identifier"
-    DATE = "date"
-    CLASS_TERM = "class_term"  # identity phrases such as "MS student"
-    YEAR = "year"  # year of study (numbers; ordinal phrases generated in M1)
-    PET_NAME = "pet_name"
-    TOKEN = "token"  # noqa: S105 - an entity kind, not a credential. Other short strings
-    TEXT = "text"  # longer phrases (paper titles, research area)
 
 
 @dataclass(frozen=True)

@@ -18,6 +18,7 @@ from pathlib import Path
 from veil import ui
 from veil.engine.matcher import Engine
 from veil.exitcodes import ExitCode
+from veil.timing import STAGES
 
 MAX_INPUT_BYTES = 10 * 1024 * 1024
 
@@ -28,6 +29,7 @@ def translate(load: EngineLoader, path: Path | None) -> int:
     text = ui.read_input(path, MAX_INPUT_BYTES)
     engine = load()
     out = engine.forward(text)  # computed fully before anything is written (fail closed)
+    STAGES.mark("translate")
     ambiguous = engine.ambiguous(text)
     if ambiguous:
         ui.err(
@@ -35,20 +37,25 @@ def translate(load: EngineLoader, path: Path | None) -> int:
             f"({len(ambiguous)} field(s)); they won't be told apart from translated ones later"
         )
     ui.write(out)
+    STAGES.report()
     return int(ExitCode.OK)
 
 
 def reverse(load: EngineLoader, path: Path | None) -> int:
     text = ui.read_input(path, MAX_INPUT_BYTES)
     out = load().reverse(text)
+    STAGES.mark("reverse")
     ui.write(out)
+    STAGES.report()
     return int(ExitCode.OK)
 
 
 def audit(load: EngineLoader, path: Path | None) -> int:
     text = ui.read_input(path, MAX_INPUT_BYTES)
     hits = load().audit(text)
+    STAGES.mark("audit")
     for hit in hits:
         ui.out(f"{hit.line}:{hit.column}  {hit.path}  ({hit.kind})")
     ui.out(f"{len(hits)} real form(s) found")
+    STAGES.report()
     return int(ExitCode.FINDINGS if hits else ExitCode.OK)

@@ -25,8 +25,7 @@ from yaml.reader import ReaderError
 from yaml.scanner import ScannerError
 
 from veil.errors import PersonaFormatError
-
-MAX_BYTES = 1024 * 1024
+from veil.persona.limits import MAX_BYTES
 
 SYNTAX = "E001"
 DUPLICATE_KEY = "E002"

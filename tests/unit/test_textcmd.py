@@ -34,6 +34,12 @@ def imported(veil_home, tmp_path, capsys):
     return veil_home
 
 
+def as_first_run(home) -> None:
+    """Remove the vault and lexicon cache the import's pre-warm created (ADR-0029)."""
+    for name in (VAULT_FILE, VAULT_FILE + ".bak", "persona.cache.age"):
+        (home.config / name).unlink(missing_ok=True)
+
+
 def feed(monkeypatch, data: str | bytes) -> None:
     raw = data.encode("utf-8") if isinstance(data, str) else data
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="utf-8"))
@@ -200,6 +206,7 @@ class TestFailures:
         assert "vault is corrupt" in err
 
     def test_vault_cannot_be_saved_means_no_output(self, imported, monkeypatch, capsys):
+        as_first_run(imported)
         from veil.engine import vault as vault_module
         from veil.errors import StorageError
 
@@ -214,6 +221,7 @@ class TestFailures:
     def test_busy_while_an_edit_holds_the_lock_and_vault_needs_saving(
         self, imported, monkeypatch, capsys
     ):
+        as_first_run(imported)
         from veil.persona.store import PersonaStore
 
         with PersonaStore(imported.config).lock():
@@ -227,6 +235,7 @@ class TestFailures:
 
 class TestVaultLifecycle:
     def test_first_run_creates_vault_then_reuses_it(self, imported, monkeypatch, capsys):
+        as_first_run(imported)
         assert not (imported.config / VAULT_FILE).exists()
         run(monkeypatch, capsys, "translate", "Jane")
         path = imported.config / VAULT_FILE
@@ -246,6 +255,7 @@ class TestVaultLifecycle:
 
     def test_concurrent_first_run_reuses_the_saved_seed(self, imported, monkeypatch, capsys):
         """A second process saved a vault after we loaded an empty one: we must adopt its seed."""
+        as_first_run(imported)
         from veil.engine import load as load_module
         from veil.engine.vault import VaultFile
 

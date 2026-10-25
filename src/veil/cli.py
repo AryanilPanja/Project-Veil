@@ -176,6 +176,7 @@ def _persona_import(args: argparse.Namespace) -> int:
     key = f"; new key stored ({result.created_key.value})" if result.created_key else ""
     action = "replaced" if result.replaced else "imported"
     ui.out(f"veil: persona {action} and encrypted ({result.warnings} warning(s)){key}")
+    _prewarm(keystore, store)
     return int(ExitCode.OK)
 
 
@@ -200,7 +201,23 @@ def _persona_edit(args: argparse.Namespace) -> int:
     )
     if result.saved:
         ui.out(f"veil: persona saved and encrypted ({result.warnings} warning(s))")
+        _prewarm(keystore, store)
     return int(ExitCode.OK)
+
+
+def _prewarm(keystore, store) -> None:
+    """Build the lexicon cache now (ADR-0029), so the next translate is warm.
+
+    Best effort and silent: the store lock is already released, nothing is printed, and any
+    failure (locked wallet, passphrase mode without a prompt, full disk) just leaves the cache
+    to be built on the next translate.
+    """
+    from veil.engine.load import load_engine
+
+    try:
+        load_engine(keystore, store)
+    except Exception:  # noqa: BLE001 - an optimization must never turn a success into a failure
+        return
 
 
 def _text_command(args: argparse.Namespace) -> int:
