@@ -50,7 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         clip_cmd = clip_commands.add_parser(name, help=help_text)
         clip_cmd.add_argument(
-            "--no-notify", action="store_true", help="no desktop notification (stderr only)"
+            "--no-notify",
+            action="store_true",
+            help="no desktop notification (stderr only); a sensitive detail is then asked "
+            "about in the terminal, or denied without one",
         )
 
     persona = commands.add_parser("persona", help="manage your persona")
@@ -258,18 +261,28 @@ def _clip_command(args: argparse.Namespace) -> int:
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
-    command = {
-        "sanitize": commands.sanitize,
-        "from-selection": commands.from_selection,
-        "restore": commands.restore,
-    }
-    outcome = command[args.clip_command](detect(), load)
+    if args.clip_command == "restore":
+        outcome = commands.restore(detect(), load)
+    else:
+        forward = {"sanitize": commands.sanitize, "from-selection": commands.from_selection}
+        outcome = forward[args.clip_command](detect(), load, _asker(args.no_notify))
     for line in messages.stderr_lines(outcome):
         ui.err(line)
     if not args.no_notify:
         notify.detect().notify(messages.notification(outcome))
     STAGES.report()
     return int(ExitCode.OK)
+
+
+def _asker(no_notify: bool):
+    """How to ask before sending a sensitive detail (ADR-0012). No way to ask means Deny."""
+    from veil.clip import ask
+
+    if not no_notify:
+        return ask.detect()
+    if ui.stdin_is_tty() and ui.stdout_is_tty():
+        return ask.TerminalAsker()
+    return ask.deny_all
 
 
 def _stores():

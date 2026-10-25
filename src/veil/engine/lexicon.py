@@ -16,7 +16,8 @@ from veil.engine.compose import derived_entities
 from veil.engine.forms import Form, Lexicon, Variant
 from veil.engine.variants import ExpandedEntity, expand_all, validate_expanded
 from veil.errors import ValidationFailed
-from veil.persona.entities import FlatPersona
+from veil.persona.entities import Entity, FlatPersona
+from veil.persona.policy import Policy
 from veil.persona.walk import EntityKind
 from veil.text.normalize import canon
 
@@ -48,7 +49,46 @@ def build_lexicon(flat: FlatPersona) -> Lexicon:
         reverse=reverse,
         never_translate=frozenset(canon(t) for t in flat.never_translate if canon(t)),
         never_reverse=frozenset(canon(t) for t in flat.never_reverse if canon(t)),
+        sensitive=sensitive_forms(flat),
+        ask_timeout_seconds=flat.settings.ask_timeout_seconds,
     )
+
+
+def sensitive_forms(flat: FlatPersona) -> tuple[Form, ...]:
+    """One form per listed special-category term whose policy acts on it (ADR-0012).
+
+    ASK terms trigger the prompt; GENERALIZE terms are always replaced by the phrase; KEEP
+    terms are not matched at all. An empty phrase generalizes to "[category]".
+    """
+    forms: list[Form] = []
+    for term in flat.sensitive:
+        if term.policy not in (Policy.ASK, Policy.GENERALIZE):
+            continue
+        phrase = term.generalized.strip() or f"[{term.category}]"
+        path = f"sensitive.{term.category}"
+        entity = Entity(
+            id=path,
+            sources=tuple(f"{path}[{j}]" for j in range(len(term.terms))),
+            kind=EntityKind.TEXT,
+            role="sensitive",
+            real_forms=(),
+            fake_forms=(),
+            policy=term.policy,
+            needs_generation=False,
+            reversible=False,
+            contexts=(),
+            allow_short=True,
+            meta=(("category", term.category),),
+        )
+        seen: set[str] = set()
+        for value in term.terms:
+            key = canon(value)
+            if key and key not in seen:
+                seen.add(key)
+                forms.append(
+                    Form(Variant(real=value, fake=phrase, spellings=(), origin="declared"), entity)
+                )
+    return tuple(forms)
 
 
 def _swap(variant: Variant) -> Variant:
