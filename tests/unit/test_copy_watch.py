@@ -36,16 +36,47 @@ class TestRecent:
         assert recent.seen("hello")
         assert not recent.seen("hello!")
 
-    def test_forgets_after_two_minutes(self):
+    def test_forgets_after_ten_seconds(self):
+        assert recent.MAX_AGE == 10.0
         recent.remember("x", now=1000.0)
         assert recent.seen("x", now=1000.0 + recent.MAX_AGE - 1)
         assert not recent.seen("x", now=1000.0 + recent.MAX_AGE)
 
+    def test_consume_uses_the_entry_up(self):
+        recent.remember("x", now=1000.0)
+        assert recent.consume("x", now=1001.0)
+        assert not recent.consume("x", now=1002.0)
+        assert not recent.seen("x", now=1002.0)
+
+    def test_consume_one_of_two_identical_writes(self):
+        recent.remember("x", now=1000.0)
+        recent.remember("x", now=1000.5)
+        assert recent.consume("x", now=1001.0)
+        assert recent.consume("x", now=1001.0)
+        assert not recent.consume("x", now=1001.0)
+
+    def test_consume_never_raises(self, monkeypatch):
+        def broken():
+            raise OSError("gone")
+
+        monkeypatch.setattr(recent, "location", broken)
+        assert recent.consume("x") is False
+
+    def test_concurrent_writers_keep_every_entry(self):
+        import threading
+
+        threads = [threading.Thread(target=recent.remember, args=(f"t{i}",)) for i in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert all(recent.seen(f"t{i}") for i in range(12))
+
     def test_keeps_the_last_sixteen(self):
         for i in range(recent.KEEP + 5):
             recent.remember(f"t{i}", now=1000.0 + i)
-        assert not recent.seen("t0", now=1030.0)
-        assert recent.seen(f"t{recent.KEEP + 4}", now=1030.0)
+        assert not recent.seen("t0", now=1021.0)
+        assert recent.seen(f"t{recent.KEEP + 4}", now=1021.0)
 
     def test_stores_no_text(self, recent_writes):
         recent.remember(REAL)
@@ -120,6 +151,26 @@ class TestWatch:
         watch.drain_stdin(stream, limit=10)
         assert stream.read()  # stopped early, rest left alone
 
+    def test_drain_gives_up_on_a_pipe_that_never_closes(self):
+        import os
+        import time
+
+        read_end, write_end = os.pipe()
+        try:
+            os.write(write_end, b"partial")
+            stream = os.fdopen(read_end, "rb", buffering=0)
+            start = time.monotonic()
+            watch.drain_stdin(stream, deadline=0.3)
+            assert time.monotonic() - start < 2
+        finally:
+            os.close(write_end)
+            stream.close()
+
+    def test_drain_handles_a_closed_stdin(self):
+        stream = io.BytesIO(b"")
+        stream.close()
+        watch.drain_stdin(stream)  # no exception
+
     def test_drain_skips_a_terminal(self):
         stream = io.BytesIO(b"typed")
         stream.isatty = lambda: True
@@ -165,13 +216,48 @@ class TestAuto:
         assert outcome.skipped is Skip.OWN
         assert board.text() == REAL
 
-    def test_a_new_copy_of_the_same_text_is_still_ours_for_two_minutes(self, engine):
-        # Copying veil's own result again within 2 minutes isn't re-sanitized: harmless,
-        # since it holds no real details.
+    def test_restored_text_copied_again_is_sanitized(self, engine):
+        # Sweep 2026-10-26 (was a leak): restore writes the real text; the watcher sees that
+        # write once; copying the same real text again is a NEW copy and must be sanitized.
+        board = FakeBoard.with_text(FAKE)
+        commands.restore(board, Loader(engine))
+        assert commands.sanitize(board, Loader(engine), auto=True).skipped is Skip.OWN
+        board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}  # copied again
+        outcome = commands.sanitize(board, Loader(engine), auto=True)
+        assert outcome.skipped is None
+        assert board.text() == FAKE
+
+    def test_own_write_is_skipped_once(self, engine):
         board = FakeBoard.with_text(REAL)
         commands.sanitize(board, Loader(engine), auto=True)
-        board.offers[Selection.CLIPBOARD] = {"text/plain": FAKE.encode()}
         assert commands.sanitize(board, Loader(engine), auto=True).skipped is Skip.OWN
+        # The same (fake) text again: nothing to replace and plain only, so nothing is written.
+        assert commands.sanitize(board, Loader(engine), auto=True).skipped is None
+        assert board.writes == [FAKE]
+
+    def test_remembered_before_the_write(self, engine, monkeypatch):
+        order = []
+        monkeypatch.setattr(recent, "remember", lambda text, **kw: order.append("remember"))
+        board = FakeBoard.with_text(REAL)
+        real_write = board.write_text
+
+        def write(text):
+            real_write(text)
+            order.append("write")
+
+        board.write_text = write
+        commands.sanitize(board, Loader(engine), auto=True)
+        assert order[:2] == ["remember", "write"]
+
+    def test_failed_write_leaves_only_a_harmless_entry(self, engine):
+        board = FakeBoard.with_text(REAL)
+        board.fail_write = True
+        with pytest.raises(ClipboardError):
+            commands.sanitize(board, Loader(engine), auto=True)
+        # The entry is for the fake text, which isn't on the clipboard: the real copy is not
+        # skipped on the next run.
+        board.fail_write = False
+        assert commands.sanitize(board, Loader(engine), auto=True).skipped is None
 
     def test_explicit_commands_never_skip(self, engine):
         board = FakeBoard.with_text(REAL)
@@ -297,3 +383,31 @@ def test_plain_only():
     assert plain_only(["text/plain", "text/plain;charset=utf-8", "TARGETS"])
     assert not plain_only(["text/plain", "text/html"])
     assert not plain_only([])
+
+
+@pytest.mark.parametrize(
+    "mime",
+    ['text/plain;charset="utf-8"', "text/plain; charset=UTF8", "text/plain;charset='utf-8'"],
+)
+def test_plain_text_with_odd_charset_spelling_is_plain(mime):
+    from veil.clip.io import Kind, classify
+
+    kind, chosen = classify([mime, "text/html"])
+    assert kind is Kind.TEXT
+    assert chosen == mime  # the type is requested exactly as offered
+
+
+@pytest.mark.usefixtures("imported")
+def test_watcher_runs_never_rebuild_the_history(board, capsys, clip_history):
+    board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}
+    run(capsys, "sanitize", "--auto")
+    assert clip_history.calls == 0  # its re-adds would wake the watcher again
+    run(capsys, "sanitize")
+    assert clip_history.calls == 1  # the hotkey still removes the original
+
+
+def test_real_clipboard_is_guarded_in_tests():
+    from veil.clip import io as clipio
+
+    with pytest.raises(AssertionError, match="real clipboard"):
+        clipio.detect()

@@ -149,12 +149,12 @@ class WaylandClipboard:
         )
 
     def write_text(self, text: str) -> None:
+        recent.remember(text)  # before the write: the copy watcher must know it's veil's own
         code = self._feed(
             [self._copy, "--type", WRITE_TYPE], text.encode("utf-8"), timeout=self._timeout
         )
         if code != 0:
             raise ClipboardError(f"wl-copy failed (exit {code})")
-        recent.remember(text)  # the copy watcher must not take this for a new copy
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         code = self._feed([self._copy, *_primary(selection), "--clear"], b"", timeout=self._timeout)
@@ -193,12 +193,12 @@ class XselClipboard:
         return ClipContent(Kind.TEXT, _decode(data.stdout), type_count=1, plain_only=True)
 
     def write_text(self, text: str) -> None:
+        recent.remember(text)  # before the write (see WaylandClipboard)
         code = self._feed(
             [self._xsel, "--clipboard", "--input"], text.encode("utf-8"), timeout=self._timeout
         )
         if code != 0:
             raise ClipboardError(f"xsel failed (exit {code})")
-        recent.remember(text)
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         code = self._feed(
@@ -233,7 +233,10 @@ def plain_only(types) -> bool:
 
 
 def _norm(mime: str) -> str:
-    return "".join(mime.split()).lower()
+    """Lower case, no spaces, unquoted parameters and `utf8` spelled `utf-8`, so that
+    `text/plain; charset="UTF8"` counts as the plain type it is (sweep 2026-10-26)."""
+    norm = "".join(mime.split()).lower().replace('"', "").replace("'", "")
+    return norm.replace("charset=utf8", "charset=utf-8")
 
 
 def _is_meta(norm_type: str) -> bool:

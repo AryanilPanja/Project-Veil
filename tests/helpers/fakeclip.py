@@ -49,11 +49,11 @@ class FakeBoard:
         )
 
     def write_text(self, text: str) -> None:
+        recent.remember(text)  # as the real backends do: just before the write
         if self.fail_write:
             raise ClipboardError("wl-copy failed (exit 1)")
         self.writes.append(text)
         self.offers[Selection.CLIPBOARD] = {WRITE_TYPE: text.encode()}
-        recent.remember(text)  # as the real backends do
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         if self.fail_clear:

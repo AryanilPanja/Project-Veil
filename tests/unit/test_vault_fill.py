@@ -258,6 +258,11 @@ class TestBijectionAndEngine:
             "call +91 90000 00001 or 9000000001",
             "born 14/03/2001, i.e. 14 March 2001 (2001-03-14)",
             "roll 2024701001, emp E-1001",
+            # sweep 2026-10-26: formats that used to pass through untranslated
+            "ring 900 000 0001, 900.000.0001, 0091 90000 00001 or (900) 000-0001",
+            "or +91-900-000-0001 or 919000000001",
+            "born 14/3/2001 aka 14-3-2001, the 14th of March 2001 (March 14th, 2001)",
+            "DOB: Mar 14, 2001 / 14-Mar-2001 / 14032001 / 20010314 / March 14 2001",
         ],
     )
     def test_engine_round_trip(self, text):
@@ -266,6 +271,9 @@ class TestBijectionAndEngine:
         out = engine.forward(text)
         for real in REALS:
             assert real not in out
+        assert "0001" not in out  # no tail of the real phone survives
+        assert "March 2001" not in out
+        assert "2001-03" not in out
         assert engine.reverse(out) == text
 
     @pytest.mark.parametrize("seed_byte", range(8))

@@ -23,7 +23,7 @@ import hashlib
 import hmac
 import re
 import string
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import date, timedelta
 
 YEAR_PREFIX = re.compile(r"^(19|20)\d\d")
@@ -308,7 +308,20 @@ def random_shift(seed: bytes) -> int:
 
 
 def variants_for(role: str, real: str, fake: str) -> Iterator[tuple[str, str]]:
-    """(real, fake) pairs of alternative spellings, index-aligned, besides the declared one."""
+    """(real, fake) pairs of alternative spellings, index-aligned, besides the declared one.
+
+    No real and no fake comes out twice: when two renderings agree on one side only (the 14th
+    is "14" padded or not, the 5th is not), the first pair wins and the other is dropped."""
+    reals: set[str] = set()
+    fakes: set[str] = set()
+    for r, f in _variants(role, real, fake):
+        if r not in reals and f not in fakes:
+            reals.add(r)
+            fakes.add(f)
+            yield r, f
+
+
+def _variants(role: str, real: str, fake: str) -> Iterator[tuple[str, str]]:
     if role == "phone":
         yield from _phone_variants(real, fake)
     elif role in ("aadhaar", "card"):
@@ -327,15 +340,25 @@ def _phone_variants(real: str, fake: str) -> Iterator[tuple[str, str]]:
     if not rn or len(rn) != len(fn):
         return
     yield rn, fn
-    if rc:
-        yield f"+{rc}{rn}", f"+{fc}{fn}"
-        yield f"+{rc} {rn}", f"+{fc} {fn}"
-        yield f"+{rc}-{rn}", f"+{fc}-{fn}"
-        yield f"0{rn}", f"0{fn}"
+    groupings: list[tuple[str, str]] = []
     if len(rn) == 10:
-        yield f"{rn[:5]} {rn[5:]}", f"{fn[:5]} {fn[5:]}"
-        yield f"{rn[:5]}-{rn[5:]}", f"{fn[:5]}-{fn[5:]}"
-        yield f"{rn[:3]}-{rn[3:6]}-{rn[6:]}", f"{fn[:3]}-{fn[3:6]}-{fn[6:]}"
+        # 5-5 and 3-3-4 groupings, with space, hyphen or dot (sweep 2026-10-26: "900 000 0001"
+        # and dotted forms leaked while only "900-000-0001" was covered).
+        for sep in (" ", "-", "."):
+            groupings.append((f"{rn[:5]}{sep}{rn[5:]}", f"{fn[:5]}{sep}{fn[5:]}"))
+            groupings.append(
+                (f"{rn[:3]}{sep}{rn[3:6]}{sep}{rn[6:]}", f"{fn[:3]}{sep}{fn[3:6]}{sep}{fn[6:]}")
+            )
+        groupings.append((f"({rn[:3]}) {rn[3:6]}-{rn[6:]}", f"({fn[:3]}) {fn[3:6]}-{fn[6:]}"))
+    yield from groupings
+    if rc:
+        for prefix_r, prefix_f in ((f"+{rc}", f"+{fc}"), (rc, fc), (f"00{rc}", f"00{fc}")):
+            yield f"{prefix_r}{rn}", f"{prefix_f}{fn}"
+            for sep in (" ", "-", "."):
+                yield f"{prefix_r}{sep}{rn}", f"{prefix_f}{sep}{fn}"
+                for r_group, f_group in groupings:
+                    yield f"{prefix_r}{sep}{r_group}", f"{prefix_f}{sep}{f_group}"
+        yield f"0{rn}", f"0{fn}"
 
 
 def _date_variants(real: str, fake: str) -> Iterator[tuple[str, str]]:
@@ -344,9 +367,37 @@ def _date_variants(real: str, fake: str) -> Iterator[tuple[str, str]]:
         return
     rd, fd = r[0], f[0]
     for order, sep in (("dmy", "/"), ("dmy", "-"), ("dmy", "."), ("ymd", "-"), ("ymd", "/")):
-        yield format_date(rd, order, sep), format_date(fd, order, sep)
-    for render in (_long_dmy, _long_mdy, _short_dmy):
+        yield from _padded_and_not(
+            lambda d, p, o=order, s=sep: format_date(d, o, s, padded=p), rd, fd
+        )
+    # Month first (US order) only when it can't be read as another day-first date.
+    if rd.day > 12 and fd.day > 12:
+        for sep in ("/", "-", "."):
+            yield from _padded_and_not(lambda d, p, s=sep: _mdy(d, s, p), rd, fd)
+    # Compact digits: 14032001 and 20010314.
+    yield f"{rd.day:02d}{rd.month:02d}{rd.year}", f"{fd.day:02d}{fd.month:02d}{fd.year}"
+    yield f"{rd.year}{rd.month:02d}{rd.day:02d}", f"{fd.year}{fd.month:02d}{fd.day:02d}"
+    for render in _DATE_WORDS:
         yield render(rd), render(fd)
+
+
+def _padded_and_not(
+    render: Callable[[date, bool], str], rd: date, fd: date
+) -> Iterator[tuple[str, str]]:
+    """14/03/2001 and 14/3/2001 (sweep 2026-10-26)."""
+    yield render(rd, True), render(fd, True)
+    yield render(rd, False), render(fd, False)
+
+
+def _mdy(d: date, sep: str, padded: bool) -> str:
+    m = f"{d.month:02d}" if padded else str(d.month)
+    day = f"{d.day:02d}" if padded else str(d.day)
+    return f"{m}{sep}{day}{sep}{d.year}"
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 11 <= n % 100 <= 13 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def _long_dmy(d: date) -> str:
@@ -359,6 +410,29 @@ def _long_mdy(d: date) -> str:
 
 def _short_dmy(d: date) -> str:
     return f"{d.day} {MONTHS[d.month - 1][:3]} {d.year}"
+
+
+def _month(d: date, short: bool = False) -> str:
+    name = MONTHS[d.month - 1]
+    return name[:3] if short else name
+
+
+# Written-out dates: long and short month names, ordinals, with and without commas.
+_DATE_WORDS = (
+    _long_dmy,
+    _long_mdy,
+    _short_dmy,
+    lambda d: f"{_ordinal(d.day)} {_month(d)} {d.year}",  # 14th March 2001
+    lambda d: f"{_ordinal(d.day)} of {_month(d)} {d.year}",  # 14th of March 2001
+    lambda d: f"{_month(d)} {_ordinal(d.day)}, {d.year}",  # March 14th, 2001
+    lambda d: f"{_month(d)} {d.day} {d.year}",  # March 14 2001
+    lambda d: f"{_month(d, short=True)} {d.day}, {d.year}",  # Mar 14, 2001
+    lambda d: f"{_month(d, short=True)} {d.day} {d.year}",  # Mar 14 2001
+    lambda d: f"{d.day}-{_month(d, short=True)}-{d.year}",  # 14-Mar-2001
+    lambda d: f"{d.day:02d}-{_month(d, short=True)}-{d.year}",  # 04-Mar-2001
+    lambda d: f"{d.day} {_month(d, short=True)}, {d.year}",  # 14 Mar, 2001
+    lambda d: f"{d.day} {_month(d)}, {d.year}",  # 14 March, 2001
+)
 
 
 def _groups(digits: str, size: int, sep: str) -> str:

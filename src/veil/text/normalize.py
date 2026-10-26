@@ -6,7 +6,7 @@ Dropped: every Unicode format character (category Cf: zero-width space, word joi
 hyphen, bidi overrides such as U+202E, …) plus the combining grapheme joiner and variation
 selectors. They are invisible and are exactly what someone would use, deliberately or by
 copy-paste, to dodge a match. Kept: zero-width joiner and non-joiner (U+200D/U+200C), which change
-meaning in Bengali and Devanagari.
+meaning in Bengali and Devanagari; between ASCII characters they are dropped too.
 """
 
 import functools
@@ -24,6 +24,18 @@ def is_dropped(ch: str) -> bool:
     if ch in KEPT_FORMAT_CHARS:
         return False
     return ch in _EXTRA_DROPPED or unicodedata.category(ch) == "Cf"
+
+
+def _dropped_at(text: str, i: int) -> bool:
+    """`is_dropped`, plus the joiners (ZWJ/ZWNJ) when they sit between ASCII characters (or at
+    an edge): there they can only hide a name ("Ja<ZWJ>ne"; sweep 2026-10-26). Next to Indic
+    or other non-ASCII text they keep their meaning."""
+    ch = text[i]
+    if ch not in KEPT_FORMAT_CHARS:
+        return is_dropped(ch)
+    before = text[i - 1] if i > 0 else " "
+    after = text[i + 1] if i + 1 < len(text) else " "
+    return before.isascii() and after.isascii()
 
 
 def nfkc(text: str) -> str:
@@ -86,7 +98,7 @@ def _fold_general_into(
 ) -> bool:
     for i in range(start, end):
         ch = text[i]
-        if is_dropped(ch):
+        if _dropped_at(text, i):
             continue
         if ch.isspace():
             if not in_space:
@@ -115,7 +127,7 @@ def _fold_with_map_general(text: str) -> tuple[str, list[int]]:
     origin: list[int] = []
     in_space = False
     for i, ch in enumerate(text):
-        if is_dropped(ch):
+        if _dropped_at(text, i):
             continue
         if ch.isspace():
             if not in_space:

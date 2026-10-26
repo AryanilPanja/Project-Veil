@@ -13,8 +13,10 @@ from tests.unit.test_clip_commands import board as board
 from tests.unit.test_clip_commands import engine as engine
 from tests.unit.test_textcmd import imported  # noqa: F401 - pytest fixture
 from veil.clip import commands, messages
+from veil.clip import io as clipio
 from veil.clip.commands import ERROR_PLACEHOLDER, WAITING_PLACEHOLDER, Scrub
 from veil.clip.io import Selection
+from veil.clip.io import detect as REAL_DETECT  # bound before conftest guards it
 from veil.clip.notify import Urgency
 from veil.engine import load as engine_load
 from veil.engine.matcher import Engine
@@ -71,7 +73,9 @@ class TestFailClosed:
     def test_write_fails_clear_still_tried(self):
         board = FakeBoard.with_text(REAL)
         board.fail_write = True
-        assert commands.fail_closed(board) is Scrub.CLEARED
+        # Cleared, but with no placeholder in front Klipper may restore the original: the
+        # honest report is FAILED ("do not paste"; sweep 2026-10-26).
+        assert commands.fail_closed(board) is Scrub.FAILED
         assert board.text() is None
 
     def test_both_fail(self):
@@ -133,8 +137,7 @@ def test_property_original_never_left_unless_reported(engine, faults):
     except Exception:  # noqa: BLE001 - every error must end in fail_closed
         scrub = commands.fail_closed(board)
         if scrub is Scrub.FAILED:
-            assert faults["write"]
-            assert faults["clear"]
+            assert faults["write"]  # the placeholder couldn't be written
         else:
             assert board.text() in (None, ERROR_PLACEHOLDER)
     else:
@@ -227,7 +230,7 @@ class TestCliFailClosed:
         got, _, _ = run(capsys, command)
         assert got == ExitCode.CLIPBOARD
         assert board.text() is None
-        assert notifications[0].summary == "veil error: clipboard cleared"
+        assert notifications[0].summary == "veil error: clipboard NOT cleared"
 
     @pytest.mark.usefixtures("imported")
     def test_clear_failure_leaves_placeholder(
@@ -304,8 +307,7 @@ class TestCliFailClosed:
         assert dict(board.offers[Selection.PRIMARY] or {}) == before
 
     def test_no_clipboard_tool(self, monkeypatch, capsys, notifications, command):
-        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.setattr(clipio, "detect", REAL_DETECT)  # no display set: finds no tool
         got, _, err = run(capsys, command)
         assert got == ExitCode.CLIPBOARD
         assert "clipboard NOT cleared" in err

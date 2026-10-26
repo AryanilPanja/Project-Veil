@@ -58,6 +58,7 @@ def import_persona(
 ) -> ImportResult:
     if shred:
         ui.require_tty("veil persona import --shred")  # ask before doing anything
+        _check_shreddable(source)
     data = read_source(source)
     report = check_bytes(data)
     if report.errors:
@@ -114,6 +115,26 @@ def _with_canary(data: bytes) -> Payload:
 def _print_warnings(report: Report) -> None:
     if report.findings:
         ui.out(render_text(report))
+
+
+def _check_shreddable(source: Path) -> None:
+    """Refuse up front what --shred can't honestly destroy: through a symlink only the link
+    would go, and a hard-linked file would live on under its other name (sweep 2026-10-26)."""
+    try:
+        if source.is_symlink():
+            raise VeilError(
+                "--shred refuses a symbolic link (the file it points to would stay); "
+                "import the file itself",
+                exit_code=ExitCode.USAGE,
+            )
+        if fsutil.hard_linked(source):
+            raise VeilError(
+                "--shred refuses a file with other hard links (its content would stay "
+                "under the other name)",
+                exit_code=ExitCode.USAGE,
+            )
+    except OSError:
+        return  # missing or unreadable: read_source reports it
 
 
 def _maybe_shred(source: Path, shred: bool, prompts: Prompts) -> bool:

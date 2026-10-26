@@ -28,6 +28,12 @@ def deny() -> list[str]:
         "Bash(*klipper*)", "Bash(*Klipper*)",
         # the key (ADR-0025)
         "Bash(*secret-tool*)", "Bash(*kwallet-query*)",
+        # veil ON / the copy watcher (ADR-0031; sweep 2026-10-26: stopping the service or
+        # killing wl-paste was an unguarded way to switch veil OFF)
+        "Bash(*veil on*)", "Bash(*veil-watch*)", "Bash(*kill-switch-timer*)",
+        "Bash(*pkill*)", "Bash(*killall*)",
+        # tools that type into the owner's windows
+        "Bash(*paste_spike*)",
     ],
 )  # fmt: skip
 def test_rule_present(deny, rule):

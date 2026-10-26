@@ -5,6 +5,7 @@ and fast scrypt. The source file must come out byte-identical with the same mtim
 """
 
 import hashlib
+import os
 import shutil
 
 import pytest
@@ -422,6 +423,27 @@ class TestShred:
         assert fingerprint(source) == before
         assert not (veil_home.config / STORE_FILE).exists()
         assert veil_home.ring.items == {}
+
+    def test_shred_refuses_a_symlink(self, veil_home, source, tmp_path, tty, answers, capsys):
+        # Through a link, only the link would go and the plaintext would stay (sweep 2026-10-26).
+        link = tmp_path / "link.yaml"
+        link.symlink_to(source)
+        before = fingerprint(source)
+        answers["confirm"] = True
+        assert veil("persona", "import", "--shred", str(link)) == ExitCode.USAGE
+        assert fingerprint(source) == before
+        assert not (veil_home.config / STORE_FILE).exists()
+        assert "symbolic link" in capsys.readouterr().err
+
+    def test_shred_refuses_a_hard_linked_file(
+        self, veil_home, source, tmp_path, tty, answers, capsys
+    ):
+        other = tmp_path / "other-name.yaml"
+        os.link(source, other)
+        answers["confirm"] = True
+        assert veil("persona", "import", "--shred", str(source)) == ExitCode.USAGE
+        assert source.read_bytes() == other.read_bytes() != b""
+        assert "hard links" in capsys.readouterr().err
 
     def test_shred_after_failed_validation_never_happens(self, veil_home, tmp_path, tty, answers):
         src = tmp_path / "bad.yaml"

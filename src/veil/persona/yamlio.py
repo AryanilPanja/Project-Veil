@@ -19,7 +19,7 @@ import yaml
 from yaml.composer import ComposerError
 from yaml.constructor import ConstructorError
 from yaml.events import AliasEvent, CollectionStartEvent, ScalarEvent
-from yaml.nodes import MappingNode, Node
+from yaml.nodes import MappingNode, Node, ScalarNode
 from yaml.parser import ParserError
 from yaml.reader import ReaderError
 from yaml.scanner import ScannerError
@@ -30,6 +30,7 @@ from veil.persona.limits import MAX_BYTES
 SYNTAX = "E001"
 DUPLICATE_KEY = "E002"
 SHAPE = "E003"
+MAX_DEPTH = 32  # the template is about 6 levels deep
 
 _BOOL = re.compile(r"^(?:true|True|TRUE|false|False|FALSE)$")
 _NULL = re.compile(r"^(?:~|null|Null|NULL|)$")
@@ -65,14 +66,26 @@ class _PersonaLoader(yaml.SafeLoader):
             isinstance(event, (ScalarEvent, CollectionStartEvent)) and event.anchor is not None
         ):
             raise _Rejected(SYNTAX, "anchors and aliases are not allowed", event.start_mark)
-        return super().compose_node(parent, index)
+        # A persona is a few levels deep; a hostile document nested thousands deep would
+        # otherwise end in a RecursionError (a traceback instead of a value-free E001).
+        depth = getattr(self, "_veil_depth", 0)
+        if depth >= MAX_DEPTH:
+            raise _Rejected(SYNTAX, "nested too deeply", event.start_mark)
+        self._veil_depth = depth + 1
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._veil_depth = depth
 
     def construct_object(self, node: Node, deep: bool = False) -> Any:
         # Explicit tags must not smuggle in other types (`!!int 1`, `!!timestamp`, `!!binary`,
         # `!!set`, `!!python/...`), and `!!bool yes` / `!!null x` must not bypass the regexes.
         tag = node.tag
+        scalar = isinstance(node, ScalarNode)
         if (
             tag not in _ALLOWED_TAGS
+            # `!!bool []` / `!!null {}`: a collection under a scalar tag (node.value is a list)
+            or (tag in (_BOOL_TAG, _NULL_TAG) and not scalar)
             or (tag == _BOOL_TAG and not _BOOL.match(node.value))
             or (tag == _NULL_TAG and not _NULL.match(node.value))
         ):
@@ -110,6 +123,8 @@ def load_yaml(source: str | bytes) -> dict[str, Any]:
         error = _format_error(exc.code, exc.problem or "invalid YAML", exc.problem_mark)
     except yaml.YAMLError as exc:
         error = _translate(exc)
+    except RecursionError:  # a second line of defence behind MAX_DEPTH
+        error = _format_error(SYNTAX, "nested too deeply", None)
     finally:
         if loader is not None:
             loader.dispose()

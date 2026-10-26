@@ -291,8 +291,21 @@ def edit_persona(
             if resume_draft:
                 drafts.remove()
             return EditResult(changed=False, saved=False, warnings=0)
-        payload = Payload(canary.insert(edited.decode("utf-8"), marker).encode("utf-8"))
-        store.save(payload, identity, recipient=recipient)
+        try:
+            payload = Payload(canary.insert(edited.decode("utf-8"), marker).encode("utf-8"))
+            store.save(payload, identity, recipient=recipient)
+        except BaseException:
+            # The plaintext session is already wiped: keep the edits as an encrypted draft so a
+            # full disk or a failed verify doesn't lose them (sweep 2026-10-26).
+            try:
+                drafts.save(edited, recipient, identity)
+                ui.err(
+                    "veil: saving failed; your edits are kept as an encrypted draft "
+                    "(`veil persona edit --resume-draft`)"
+                )
+            except Exception:  # noqa: BLE001, S110 - the original error matters more
+                pass
+            raise
         drafts.remove()
     if report.findings:
         ui.out(render_text(report))

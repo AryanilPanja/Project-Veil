@@ -74,10 +74,8 @@ class Mapped:
             return None
         if self.identity:
             raw = self.raw
-            if unicodedata.combining(raw[start]) or (
-                end < len(raw) and unicodedata.combining(raw[end])
-            ):
-                return None  # would split a base character from its combining marks
+            if _is_mark(raw[start]) or (end < len(raw) and _is_mark(raw[end])):
+                return None  # would split a base character from its marks
             return start, end
         first, last = self.cluster_of[start], self.cluster_of[end - 1]
         if self.clusters[first][2] != start or self.clusters[last][3] != end:
@@ -262,12 +260,20 @@ class Engine:
         return counts
 
 
+def _is_mark(ch: str) -> bool:
+    """A mark that belongs to the character before it. Not just `combining() != 0`: Indic vowel
+    signs (category Mc/Mn) often have combining class 0, and a decomposed two-part vowel
+    (U+09C7 U+09BE) only composes when kept with its base (sweep 2026-10-26: NFD Bengali names
+    went untranslated)."""
+    return unicodedata.combining(ch) != 0 or unicodedata.category(ch).startswith("M")
+
+
 def _clusters(raw: str) -> list[tuple[int, int]]:
-    """(start, end) of each base character plus the combining marks that follow it."""
+    """(start, end) of each base character plus the marks that follow it."""
     spans: list[tuple[int, int]] = []
     start = 0
     for i in range(1, len(raw) + 1):
-        if i == len(raw) or unicodedata.combining(raw[i]) == 0:
+        if i == len(raw) or not _is_mark(raw[i]):
             spans.append((start, i))
             start = i
     return spans if raw else []

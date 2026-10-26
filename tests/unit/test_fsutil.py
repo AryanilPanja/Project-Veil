@@ -504,7 +504,7 @@ class TestAtomicWriteBackup:
         assert leftovers(target.parent) == []
 
     def test_stale_backup_staging_file_is_replaced(self, target):
-        staging = target.with_name(f".{target.name}.bak.tmp")
+        staging = target.with_name(f".{target.name}.bak-staging")
         staging.write_bytes(b"stale")
         fsutil.atomic_write(target, NEW, backup=True)
         assert self.bak(target).read_bytes() == OLD
@@ -573,19 +573,32 @@ class TestSecureRemove:
         fsutil.secure_remove(target)
         assert seen == [bytes(len(OLD))]
 
-    def test_other_hard_link_sees_zeros(self, target, tmp_path):
+    def test_other_hard_link_keeps_its_data(self, target, tmp_path):
+        # Overwriting would destroy the other name's data too (the store and its .bak share an
+        # inode): a hard-linked file is only unlinked (sweep 2026-10-26).
         other = tmp_path / "other"
         os.link(target, other)
         fsutil.secure_remove(target)
-        assert other.read_bytes() == bytes(len(OLD))
+        assert other.read_bytes() == OLD
+        assert not target.exists()
+
+    def test_overwrite_is_visible_through_an_open_descriptor(self, target):
+        fd = os.open(target, os.O_RDONLY)
+        try:
+            fsutil.secure_remove(target)
+            assert os.pread(fd, len(OLD), 0) == bytes(len(OLD))
+        finally:
+            os.close(fd)
 
     def test_large_file(self, tmp_path):
         f = tmp_path / "big"
         f.write_bytes(os.urandom(fsutil._CHUNK + 3))
-        other = tmp_path / "other"
-        os.link(f, other)
-        fsutil.secure_remove(f)
-        assert other.read_bytes() == bytes(fsutil._CHUNK + 3)
+        fd = os.open(f, os.O_RDONLY)
+        try:
+            fsutil.secure_remove(f)
+            assert os.pread(fd, fsutil._CHUNK + 3, 0) == bytes(fsutil._CHUNK + 3)
+        finally:
+            os.close(fd)
 
     def test_empty_file(self, tmp_path):
         f = tmp_path / "empty"
@@ -732,3 +745,70 @@ class TestErrorMapping:
     def test_os_error_text_is_never_copied(self):
         exc = fsutil._storage_error(OSError(errno.EIO, "Jane Doe leaked"), "the store")
         assert "Jane" not in str(exc)
+
+
+# ── hard links: the live store and its .bak share an inode (sweep 2026-10-26) ─
+
+
+def test_stale_staging_link_never_zeroes_the_live_file(tmp_path):
+    live = tmp_path / "store.bin"
+    live.write_bytes(b"precious encrypted bytes")
+    live.chmod(0o600)
+    # What an older veil (or a crash between link and rename) left behind: a hard link of the
+    # live file whose name matches the stale-temp pattern.
+    os.link(live, tmp_path / ".store.bin.bak.tmp")
+    fsutil.remove_stale_temps(live)
+    assert live.read_bytes() == b"precious encrypted bytes"
+    assert not (tmp_path / ".store.bin.bak.tmp").exists()
+
+
+def test_secure_remove_only_unlinks_a_hard_linked_file(tmp_path):
+    first = tmp_path / "a"
+    first.write_bytes(b"data")
+    os.link(first, tmp_path / "b")
+    assert fsutil.secure_remove(tmp_path / "b")
+    assert first.read_bytes() == b"data"
+    assert fsutil.secure_remove(first)  # now the only link: overwritten, then removed
+    assert not first.exists()
+
+
+def test_hard_linked(tmp_path):
+    first = tmp_path / "a"
+    first.write_bytes(b"x")
+    assert not fsutil.hard_linked(first)
+    os.link(first, tmp_path / "b")
+    assert fsutil.hard_linked(first)
+
+
+def test_backup_staging_name_is_not_a_stale_temp(tmp_path):
+    live = tmp_path / "store.bin"
+    fsutil.atomic_write(live, b"v1")
+    fsutil.atomic_write(live, b"v2", backup=True)
+    assert (tmp_path / "store.bin.bak").read_bytes() == b"v1"
+    assert not list(tmp_path.glob(".store.bin.*.tmp"))
+    assert not list(tmp_path.glob(".store.bin.bak*"))
+
+
+def test_failed_backup_rename_leaves_no_staging_link(tmp_path):
+    live = tmp_path / "store.bin"
+    fsutil.atomic_write(live, b"v1")
+    (tmp_path / "store.bin.bak").mkdir()  # the rename onto it fails
+    with pytest.raises(VeilError):
+        fsutil.atomic_write(live, b"v2", backup=True)
+    assert live.read_bytes() == b"v1"
+    assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+
+def test_failed_directory_flush_after_rename_says_so(tmp_path, monkeypatch):
+    target = tmp_path / "file.bin"
+    target.write_bytes(b"old")
+
+    def broken(path):
+        raise OSError(errno.EIO, "io")
+
+    monkeypatch.setattr(fsutil, "fsync_dir", broken)
+    with pytest.raises(StorageError) as info:
+        fsutil.atomic_write(target, b"new")
+    assert target.read_bytes() == b"new"  # the rename happened
+    assert "unchanged" not in info.value.safe_message
+    assert "was written" in info.value.safe_message

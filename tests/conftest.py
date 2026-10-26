@@ -41,6 +41,39 @@ def _no_real_config_dirs(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_desktop(monkeypatch):
+    """No test may reach the owner's display, clipboard, session bus, runtime dir or systemd
+    (sweep 2026-10-26: these were guarded only where a test remembered to).
+
+    - display and bus: unset / pointed at a socket that doesn't exist;
+    - XDG_RUNTIME_DIR: a path that doesn't exist (never /run/user/<uid>/veil);
+    - the clipboard: the CLI's `detect()` (no arguments) fails loudly unless a test installs
+      the in-memory board (the `board` fixtures); calls with an explicit env/which (the tests
+      of detect itself) still run the real logic;
+    - systemctl / systemd-run: `killswitch._run` fails unless a test injects `run=`.
+    """
+    from veil import killswitch
+    from veil.clip import io as clipio
+
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("DISPLAY", raising=False)
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/nonexistent/veil-test-bus")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/nonexistent/veil-test-runtime")
+    real_detect = clipio.detect
+
+    def guarded_detect(env=None, which=None):
+        if env is None and which is None:
+            raise AssertionError("a test reached the real clipboard (use the `board` fixture)")
+        return real_detect(env, which) if which is not None else real_detect(env)
+
+    def forbidden_run(argv):
+        raise AssertionError("a test tried to run systemctl/systemd-run")
+
+    monkeypatch.setattr(clipio, "detect", guarded_detect)
+    monkeypatch.setattr(killswitch, "_run", forbidden_run)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_editor(monkeypatch):
     """The owner's $VISUAL/$EDITOR must never launch during tests (it would wait for a human)."""
     monkeypatch.delenv("VISUAL", raising=False)
@@ -132,11 +165,16 @@ class RecordingTimers:
 
     def __init__(self) -> None:
         self.scheduled: list = []
+        self.checks: list = []
         self.cancelled = 0
         self.ok = True
 
     def schedule(self, switch, now) -> bool:
         self.scheduled.append((switch, now))
+        return self.ok
+
+    def schedule_check(self, delay) -> bool:
+        self.checks.append(delay)
         return self.ok
 
     def cancel(self) -> None:

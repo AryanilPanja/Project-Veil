@@ -211,6 +211,96 @@ class TestVariants:
         assert pairs["March 14, 2001"] == "February 5, 2001"
         assert pairs["14 Mar 2001"] == "5 Feb 2001"
 
+    # Sweep 2026-10-26: common ways people write a phone or a date that used to pass through.
+    @pytest.mark.parametrize(
+        ("real", "fake"),
+        [
+            ("919000000001", "919824638262"),
+            ("00919000000001", "00919824638262"),
+            ("+91 900 000 0001", "+91 982 463 8262"),
+            ("+91-90000-00001", "+91-98246-38262"),
+            ("900.000.0001", "982.463.8262"),
+            ("90000.00001", "98246.38262"),
+            ("(900) 000-0001", "(982) 463-8262"),
+            ("91 90000 00001", "91 98246 38262"),
+            ("09000000001", "09824638262"),
+        ],
+    )
+    def test_more_phone_variants(self, real, fake):
+        pairs = dict(g.variants_for("phone", "+91 90000 00001", "+91 98246 38262"))
+        assert pairs[real] == fake
+
+    def test_phone_variants_have_unique_reals_and_fakes(self):
+        pairs = list(g.variants_for("phone", "+91 90000 00001", "+91 98246 38262"))
+        assert len({r for r, _ in pairs}) == len(pairs)
+        assert len({f for _, f in pairs}) == len(pairs)
+        assert all(len(re.sub(r"\D", "", r)) == len(re.sub(r"\D", "", f)) for r, f in pairs)
+
+    def test_phone_without_country_code(self):
+        pairs = dict(g.variants_for("phone", "90000 00001", "98246 38262"))
+        assert pairs["900-000-0001"] == "982-463-8262"
+        assert not any(r.startswith(("+", "00")) for r in pairs)
+
+    def test_phone_of_other_length_gets_no_grouping(self):
+        pairs = dict(g.variants_for("phone", "+44 2079460000", "+44 2079461111"))
+        assert pairs["2079460000"] == "2079461111"
+        assert "20794 60000" in pairs
+        assert "(207) 946-0000" in pairs
+        # Too short to split off a country code: only the bare digits.
+        assert list(g.variants_for("phone", "+1 555123", "+1 555987")) == [("1555123", "1555987")]
+
+    def test_phone_lengths_differ_gives_nothing(self):
+        assert list(g.variants_for("phone", "+91 90000 00001", "+91 9824638")) == []
+
+    @pytest.mark.parametrize(
+        ("real", "fake"),
+        [
+            ("14/3/2001", "5/2/2001"),
+            ("14-3-2001", "5-2-2001"),
+            ("14.3.2001", "5.2.2001"),
+            ("2001-3-14", "2001-2-5"),
+            ("14032001", "05022001"),
+            ("20010314", "20010205"),
+            ("14th March 2001", "5th February 2001"),
+            ("14th of March 2001", "5th of February 2001"),
+            ("March 14th, 2001", "February 5th, 2001"),
+            ("March 14 2001", "February 5 2001"),
+            ("Mar 14, 2001", "Feb 5, 2001"),
+            ("14-Mar-2001", "5-Feb-2001"),
+            ("14 March, 2001", "5 February, 2001"),
+        ],
+    )
+    def test_more_date_variants(self, real, fake):
+        pairs = dict(g.variants_for("date_of_birth", "14/03/2001", "05/02/2001"))
+        assert pairs[real] == fake
+
+    def test_month_first_only_when_unambiguous(self):
+        # 05/02 could be read either way: no month-first forms for that pair.
+        pairs = dict(g.variants_for("date_of_birth", "14/03/2001", "05/02/2001"))
+        assert "03/14/2001" not in pairs
+        pairs = dict(g.variants_for("date_of_birth", "14/03/2001", "23/02/2001"))
+        assert pairs["03/14/2001"] == "02/23/2001"
+        assert pairs["3/14/2001"] == "2/23/2001"
+
+    @pytest.mark.parametrize(
+        ("n", "word"),
+        [(1, "1st"), (2, "2nd"), (3, "3rd"), (4, "4th"), (11, "11th"), (12, "12th"),
+         (13, "13th"), (21, "21st"), (22, "22nd"), (23, "23rd"), (31, "31st")],
+    )  # fmt: skip
+    def test_ordinal(self, n, word):
+        assert g._ordinal(n) == word
+
+    @pytest.mark.parametrize(
+        ("real", "fake"),
+        [("01/01/2001", "25/12/2000"), ("12/11/1999", "05/02/2001"), ("31/12/1999", "29/02/2000")],
+    )
+    def test_date_variants_never_repeat_a_form(self, real, fake):
+        # Where one side has no short form (25/12 padded or not), the second pair is dropped
+        # rather than mapping one real or one fake to two counterparts.
+        pairs = list(g.variants_for("date_of_birth", real, fake))
+        assert len({r for r, _ in pairs}) == len(pairs)
+        assert len({f for _, f in pairs}) == len(pairs)
+
     def test_card_variants(self):
         pairs = dict(g.variants_for("card", "4111 1111 1111 1111", "4539 1488 0343 6467"))
         assert pairs["4111111111111111"] == "4539148803436467"

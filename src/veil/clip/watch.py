@@ -13,14 +13,18 @@ every offered type), so `drain_stdin` just empties that pipe.
 Wayland only: on X11 there is no equivalent here; the explicit hotkeys still work.
 """
 
+import io
 import os
+import select
 import shutil
 import sys
+import time
 from collections.abc import Callable
 
 from veil.errors import ClipboardError
 
 DRAIN_LIMIT = 64 * 1024 * 1024  # stop reading a runaway pipe; the clipboard is read separately
+DRAIN_SECONDS = 2.0
 
 
 def argv(wl_paste: str, python: str = sys.executable) -> list[str]:
@@ -40,15 +44,29 @@ def run(
     execv(wl_paste, argv(wl_paste))
 
 
-def drain_stdin(stream=None, limit: int = DRAIN_LIMIT) -> None:
-    """Read and discard what wl-paste --watch pipes in (never kept, never decoded)."""
+def drain_stdin(stream=None, limit: int = DRAIN_LIMIT, deadline: float = DRAIN_SECONDS) -> None:
+    """Read and discard what wl-paste --watch pipes in (never kept, never decoded). Gives up
+    after `deadline` seconds: a source application that never closes the pipe must not stall
+    the sanitize (sweep 2026-10-26)."""
     try:
         stream = sys.stdin.buffer if stream is None else stream
         if stream.isatty():
             return
+        try:
+            fd = stream.fileno()
+        except (OSError, ValueError, io.UnsupportedOperation):
+            fd = None  # an in-memory stream: it can't block
+        end = time.monotonic() + deadline
         total = 0
         while total < limit:
-            chunk = stream.read(min(1 << 16, limit - total))
+            want = min(1 << 16, limit - total)
+            if fd is None:
+                chunk = stream.read(want)
+            else:
+                left = end - time.monotonic()
+                if left <= 0 or not select.select([fd], [], [], left)[0]:
+                    return
+                chunk = os.read(fd, want)
             if not chunk:
                 return
             total += len(chunk)

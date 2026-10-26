@@ -7,6 +7,8 @@
 import argparse
 import dataclasses
 import os
+import re
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -28,8 +30,33 @@ class _VersionAction(argparse.Action):
         parser.exit()
 
 
+_REPR = r"""(?:'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")"""
+
+
+class _Parser(argparse.ArgumentParser):
+    """argparse, minus echoing what was typed: a stray argument can be personal text
+    (`veil translate "<your name>"`), and errors land in terminals and logs (sweep 2026-10-26).
+    Subcommand parsers inherit this class."""
+
+    def error(self, message: str):
+        message = re.sub(
+            r"unrecognized arguments: .*", "unrecognized arguments (not shown)", message, flags=re.S
+        )
+        # argparse quotes the value with repr(): '…', or "…" when it holds an apostrophe.
+        message = re.sub(rf"invalid choice: {_REPR}", "invalid choice", message)
+        message = re.sub(rf"invalid (\S+) value: {_REPR}", r"invalid \1 value", message)
+        message = re.sub(
+            r"ambiguous option: .*? could match",
+            "ambiguous option, could match",
+            message,
+            flags=re.S,
+        )
+        self.print_usage(sys.stderr)
+        self.exit(int(ExitCode.USAGE), f"{self.prog}: error: {message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="veil",
         description="Translate personal information into a consistent fake persona.",
     )
@@ -85,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
     commands.add_parser("status", help="ON or OFF (exit 0 = on, 3 = off)")
     timer = commands.add_parser("kill-switch-timer")  # run by systemd timers; not listed
-    timer.add_argument("event", choices=("expire", "remind"))
+    timer.add_argument("event", choices=("expire", "remind", "stopped", "check"))
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
@@ -182,7 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     report = hardening.apply()
     if not report.complete:
-        # Never silent. Commands that decrypt the persona (T9+) will refuse to run in this state.
+        # Never silent. Not enforced: decrypting commands still run (a warning only); refusing
+        # them is TODO-later (sweep 2026-10-26 found the old comment claimed otherwise).
         ui.err(
             "veil: warning: process hardening incomplete "
             f"(umask={report.umask_set}, core_dumps_off={report.core_dumps_disabled}, "
@@ -481,9 +509,11 @@ def _clip_command(args: argparse.Namespace) -> int:
         elif args.clip_command == "from-selection":
             outcome = commands.from_selection(board, load, _asker(args.no_notify), history.detect())
         else:  # sanitize, paste
-            outcome = commands.sanitize(
-                board, load, _asker(args.no_notify), history.detect(), auto=auto
-            )
+            # No history rebuild inside watcher runs: its re-adds are clipboard changes that
+            # would wake the watcher again. Picking an entry from the history while veil is ON
+            # is itself a copy, so it gets sanitized anyway (sweep 2026-10-26).
+            forget = None if auto else history.detect()
+            outcome = commands.sanitize(board, load, _asker(args.no_notify), forget, auto=auto)
     except (Exception, KeyboardInterrupt) as error:
         # Fail closed (M2.5, spec §4.4), then let `main` report the error and pick the exit code.
         scrub = None if args.clip_command == "restore" else commands.fail_closed(board)

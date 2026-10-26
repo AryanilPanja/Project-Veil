@@ -63,7 +63,9 @@ def runtime_base(read: TextReader = _read_text) -> Path:
         raise UnsafeEnvironment("the runtime directory is not owned by you")
     if stat.S_IMODE(info.st_mode) & 0o077:
         raise UnsafeEnvironment("the runtime directory is accessible to other users")
-    fstype = filesystem_of(base, read("/proc/self/mountinfo"))
+    # Resolve symlinked parents first: the mount table holds real paths, and a lexical match
+    # would let `<tmpfs>/link-to-disk/dir` pass as memory (sweep 2026-10-26).
+    fstype = filesystem_of(Path(os.path.realpath(base)), read("/proc/self/mountinfo"))
     if fstype not in MEMORY_FILESYSTEMS:
         raise UnsafeEnvironment(
             "the runtime directory is not in memory (tmpfs); refusing to write plaintext there"

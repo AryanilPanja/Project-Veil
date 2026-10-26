@@ -52,10 +52,11 @@ def validate(persona: Persona) -> Report:
 
     findings: list[Finding] = []
     rows: list[FormRow] = []
+    kept: list[FormRow] = []
     records = list(iter_pair_records(persona))
     for record in records:
-        rows.extend(_rows_of(record, findings))
-    findings.extend(validate_forms(rows))
+        rows.extend(_rows_of(record, findings, kept))
+    findings.extend(validate_forms(rows, kept))
     findings.extend(cross_field_findings(persona, records))
     if not any(f.severity is Severity.ERROR for f in findings):
         findings.extend(_expanded_findings(persona))
@@ -73,24 +74,36 @@ def _expanded_findings(persona: Persona) -> list[Finding]:
     return validate_expanded(expand_all(flatten(persona)))
 
 
-def validate_forms(rows: Sequence[FormRow]) -> list[Finding]:
+def validate_forms(rows: Sequence[FormRow], kept: Sequence[FormRow] = ()) -> list[Finding]:
+    """`kept`: values passed on unchanged (KEEP, or real == fake). They take part in the
+    bijection too: a fake equal to one would make reverse rewrite the kept value (E012)."""
     findings: list[Finding] = []
     with_fake = [r for r in rows if canon(r.fake)]
     findings.extend(_many_to_one(with_fake))
     findings.extend(_one_to_many(with_fake))
-    findings.extend(_equal_across(rows, with_fake))
+    findings.extend(_equal_across([*rows, *kept], with_fake))
     findings.extend(_containment(rows, with_fake))
+    findings.extend(_kept_inside_fakes(kept, with_fake))
     return findings
 
 
 # ── Rows ──────────────────────────────────────────────────────────────────────
 
 
-def _rows_of(record: PairRecord, findings: list[Finding]) -> Iterable[FormRow]:
+def _rows_of(
+    record: PairRecord, findings: list[Finding], kept: list[FormRow] | None = None
+) -> Iterable[FormRow]:
+    kept = [] if kept is None else kept
     if not record.enabled:
         return []
     policy = effective_policy(record.policy, record.path)
     if policy in NOT_TRANSLATED:
+        if policy is Policy.KEEP:
+            kept.extend(
+                FormRow(record.form_path(i), real, real, reversible=False)
+                for i, real in enumerate(record.reals)
+                if canon(real)
+            )
         return []
     if record.list_path and record.reals and record.fakes:
         real_list = len(record.reals) - record.head_forms
@@ -103,13 +116,39 @@ def _rows_of(record: PairRecord, findings: list[Finding]) -> Iterable[FormRow]:
                     f"real and fake lists have different lengths ({real_list} vs {fake_list})",
                 )
             )
+    if policy in GENERATED:
+        filled = [
+            bool(canon(record.fakes[i])) if i < len(record.fakes) else False
+            for i, real in enumerate(record.reals)
+            if canon(real)
+        ]
+        if any(filled) and not all(filled):
+            # Generated fakes are all-or-nothing per entity: a half-filled group would be
+            # dropped whole (nothing translated, not even the filled forms).
+            findings.append(
+                _error(
+                    "E022",
+                    record.path,
+                    f"fill every fake or none ({policy.value} generates them all together)",
+                )
+            )
     rows: list[FormRow] = []
     for i, real in enumerate(record.reals):
-        if not real.strip():
+        path = record.form_path(i)
+        if not canon(real):
+            # Emptiness by the canonical form: str.strip() keeps zero-width characters.
+            if real.strip():
+                findings.append(
+                    Finding(
+                        Severity.WARNING,
+                        "W112",
+                        path,
+                        "the value is only invisible characters; it is ignored",
+                    )
+                )
             continue
         fake = record.fakes[i] if i < len(record.fakes) else ""
-        path = record.form_path(i)
-        if not fake.strip():
+        if not canon(fake):
             if policy not in GENERATED:
                 findings.append(
                     _error("E016", path, "a fake is required (or set `policy: KEEP` to pass it on)")
@@ -127,6 +166,7 @@ def _rows_of(record: PairRecord, findings: list[Finding]) -> Iterable[FormRow]:
             findings.append(
                 Finding(Severity.INFO, "I002", path, "real and fake are the same; treated as KEEP")
             )
+            kept.append(FormRow(path, real, real, reversible=False))
             continue
         if record.kind is EntityKind.YEAR:
             continue
@@ -217,6 +257,22 @@ def _containment(all_rows: Sequence[FormRow], rows: Sequence[FormRow]) -> Iterab
             if canon(other.fake) != canon(row.real):
                 yield _error(
                     "E014", other.path, f"the real value at {row.path} occurs inside this fake"
+                )
+
+
+def _kept_inside_fakes(kept: Sequence[FormRow], fakes: Sequence[FormRow]) -> Iterable[Finding]:
+    """W113: a fake that contains a value you keep unchanged makes reverse rewrite that value
+    wherever it appears inside the fake ("New Delhi" as a fake while "Delhi" is kept)."""
+    pairs = containment_pairs([r.real for r in kept], [r.fake for r in fakes])
+    for k, row in enumerate(kept):
+        for f in pairs.get(k, ()):
+            other = fakes[f]
+            if canon(other.fake) != canon(row.real):  # equality is E012
+                yield Finding(
+                    Severity.WARNING,
+                    "W113",
+                    other.path,
+                    f"the value kept unchanged at {row.path} occurs inside this fake",
                 )
 
 

@@ -32,6 +32,11 @@ def findings_of(doc: str) -> list[tuple[str, str]]:
     return [(f.code, f.path) for f in check(doc).errors]
 
 
+def all_findings_of(doc: str) -> list[tuple[str, str]]:
+    """Every finding, warnings included (for the W112/W113 checks emitted here)."""
+    return [(f.code, f.path) for f in check(doc).findings]
+
+
 # ── Valid documents ───────────────────────────────────────────────────────────
 
 
@@ -204,16 +209,51 @@ def test_year_of_study_is_excluded():
     assert findings_of(doc) == []
 
 
-def test_identical_pairs_are_excluded():
-    assert (
-        findings_of(V + "person: {gender: {real: f, fake: f}}\npeople: [{real: Ravi, fake: f}]\n")
-        == []
-    )
+def test_identical_pairs_take_part_in_the_bijection():
+    # gender f→f is kept (I002); a fake "f" elsewhere would make reverse rewrite every kept "f"
+    # into "Ravi" (sweep 2026-10-26: this test used to expect no finding).
+    doc = V + "person: {gender: {real: f, fake: f}}\npeople: [{real: Ravi, fake: f}]\n"
+    assert ("E012", "people[0]") in findings_of(doc)
 
 
-def test_kept_values_are_not_checked():
+def test_kept_values_take_part_in_the_bijection():
     doc = V + "person: {languages: {real: Om, policy: KEEP}}\npeople: [{real: Ravi, fake: Om}]\n"
+    assert ("E012", "people[0]") in findings_of(doc)
+
+
+def test_kept_value_inside_a_fake_warns():
+    doc = (
+        V
+        + "person: {current_city: {real: Delhi, policy: KEEP}}\n"
+        + "people: [{real: Ravi Kumar, fake: Delhi Sharma}]\n"
+    )
+    assert ("W113", "people[0]") in all_findings_of(doc)
+
+
+def test_unrelated_kept_values_are_fine():
+    doc = V + "person: {languages: {real: Hindi, policy: KEEP}}\npeople: [{real: Ravi, fake: Om}]\n"
     assert findings_of(doc) == []
+
+
+@pytest.mark.parametrize(
+    "invisible", ["\u200b", "\u2060", "\u00ad", "\ufe0f", "\u200b\u200b", "\ufeff"]
+)
+def test_invisible_only_fake_is_missing(invisible):
+    # str.strip() keeps these; the canonical form drops them: the real value would be sent as is.
+    doc = V + f'people: [{{real: Ravi Kumar, fake: "{invisible}"}}]\n'
+    assert ("E016", "people[0]") in findings_of(doc)
+
+
+def test_invisible_only_real_warns():
+    doc = V + 'people: [{real: "\u200b", fake: Om}]\n'
+    assert ("W112", "people[0]") in all_findings_of(doc)
+
+
+def test_invisible_only_fake_never_reaches_the_lexicon():
+    from tests.unit.test_matcher import lexicon_from
+
+    lexicon = lexicon_from(V + 'people: [{real: Ravi Kumar, fake: "\u200b"}]\n')
+    assert lexicon.forward == ()
 
 
 def test_multiple_problems_are_all_reported():
