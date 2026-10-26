@@ -12,6 +12,8 @@ captures/
 .env.*
 *.key
 *.pem
+# the filled M4 site-matrix slot file (real values); the template and synthetic copy are committed
+matrix-slots.txt
 
 # Python / tooling
 .venv/

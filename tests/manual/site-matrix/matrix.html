@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Offline by construction: no network of any kind, no storage. Values live in page memory only. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; media-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<title>veil site matrix</title>
+<style>
+  :root {
+    --bg: #fbfaf7; --fg: #1d1d1b; --muted: #66645e; --card: #ffffff; --line: #dedbd3;
+    --ok: #1d7a3a; --bad: #b3261e; --warn: #8a5a00; --accent: #2d5bd7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161614; --fg: #ecebe6; --muted: #a3a19a; --card: #1f1f1c; --line: #3a3934;
+      --ok: #5fc27e; --bad: #ff8a80; --warn: #e0b04f; --accent: #8fb0ff;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, sans-serif; max-width: 1100px; margin-inline: auto;
+  }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  h2 { font-size: 1.1rem; margin: 28px 0 8px; }
+  h3 { font-size: 1rem; margin: 0 0 6px; }
+  p.lead, .muted { color: var(--muted); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; margin: 10px 0;
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  textarea, .box {
+    width: 100%; min-height: 7rem; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--fg); font: 13px/1.45 ui-monospace, monospace;
+  }
+  .box { font-family: system-ui, sans-serif; font-size: 14px; overflow-wrap: anywhere; }
+  .box table { border-collapse: collapse; }
+  .box td, .box th { border: 1px solid var(--line); padding: 2px 8px; text-align: left; }
+  textarea.dump { min-height: 10rem; }
+  button { font: inherit; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--card); color: var(--fg); cursor: pointer; }
+  .ok { color: var(--ok); font-weight: 600; }
+  .bad { color: var(--bad); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  code { font: 13px ui-monospace, monospace; }
+  a { color: var(--accent); }
+  ul.result { margin: 6px 0 0; padding-left: 20px; }
+  @media (max-width: 600px) { body { padding: 12px; } }
+</style>
+</head>
+<body>
+<h1>veil site matrix</h1>
+<p class="lead">
+  The generic test page for M4 (spec §7). Load your filled slot file, copy from a source box
+  (<b>Select</b>, then Ctrl+C), sanitize, and paste into a chat or into a target box below.
+  This page has no network access and stores nothing. Steps: <code>doc/guides/site-matrix.md</code>.
+</p>
+
+<div class="card">
+  <h3>1. Load slots</h3>
+  <div class="row">
+    <input type="file" id="slot-file" accept=".txt,text/plain">
+    <button id="forget">Forget loaded values</button>
+  </div>
+  <div id="load-status" class="muted">Nothing loaded.</div>
+</div>
+
+<h2>2. Sources (copy from here)</h2>
+<div class="card">
+  <div class="row"><h3>Plain text: names, email, path</h3><button data-select="src-plain">Select</button></div>
+  <textarea id="src-plain" readonly></textarea>
+</div>
+<div class="card">
+  <div class="row"><h3>Rich web page: bold, links, a table</h3><button data-select="src-rich">Select</button></div>
+  <div id="src-rich" class="box"></div>
+</div>
+<div class="card">
+  <div class="row"><h3>Terminal dump (≥ 50 KB)</h3><button data-select="src-dump">Select</button>
+    <span id="dump-size" class="muted"></span></div>
+  <textarea id="src-dump" class="dump" readonly></textarea>
+</div>
+<div class="card">
+  <div class="row"><h3>Bengali / Devanagari / Tamil name forms</h3><button data-select="src-indic">Select</button></div>
+  <textarea id="src-indic" readonly></textarea>
+</div>
+<div class="card">
+  <div class="row"><h3>Sensitive term (Allow / Generalize / Deny)</h3><button data-select="src-sensitive">Select</button></div>
+  <textarea id="src-sensitive" readonly></textarea>
+</div>
+
+<h2>3. Targets (paste here)</h2>
+<div class="card">
+  <div class="row">
+    <span>Expect:</span>
+    <label><input type="radio" name="expect" value="sanitized" checked> sanitized (no real values)</label>
+    <label><input type="radio" name="expect" value="restored"> restored (real values back)</label>
+  </div>
+</div>
+<div class="card">
+  <div class="row"><h3>Plain textarea</h3><button data-check="dst-plain">Check contents</button>
+    <button data-clear="dst-plain">Clear</button></div>
+  <textarea id="dst-plain"></textarea>
+  <div id="dst-plain-result" class="muted">Paste something.</div>
+</div>
+<div class="card">
+  <div class="row"><h3>Rich box (contenteditable, like most chat inputs)</h3>
+    <button data-check="dst-rich">Check contents</button><button data-clear="dst-rich">Clear</button></div>
+  <div id="dst-rich" class="box" contenteditable="true"></div>
+  <div id="dst-rich-result" class="muted">Paste something.</div>
+</div>
+
+<script>
+"use strict";
+const Matrix = (() => {
+  // The slot keys, in template order. tests/manual/site-matrix/matrix-slots.template.txt lists the same keys.
+  const SLOT_KEYS = [
+    "first_name", "last_name", "full_name", "short_name",
+    "name_bengali", "name_devanagari", "name_tamil",
+    "email", "email_2", "phone", "phone_other_format", "address", "pin_code",
+    "date_of_birth", "date_of_birth_other_format", "hometown",
+    "institution", "institution_short", "lab", "advisor", "advisor_bare",
+    "employer", "manager", "relative",
+    "github", "website", "private_repo",
+    "linux_user", "hostname", "home_dir", "cluster", "cluster_user", "slurm_account",
+    "sensitive_term",
+  ];
+  const KEY_RE = /^[a-z][a-z0-9_]*$/;
+  const DUMP_MIN_BYTES = 51200;
+
+  // How each slot is marked up in the rich source.
+  const RICH_KIND = {
+    first_name: "strong", last_name: "strong", full_name: "strong", short_name: "strong",
+    advisor: "strong", advisor_bare: "strong", manager: "strong", relative: "strong",
+    email: "mailto", email_2: "mailto", github: "github", website: "site",
+    linux_user: "code", hostname: "code", home_dir: "code", cluster: "code",
+    cluster_user: "code", slurm_account: "code", private_repo: "code",
+  };
+
+  const SECTIONS = [
+    ["About me", [
+      "Hi, I'm {full_name}.",
+      "Most people call me {first_name}.",
+      "At home I'm {short_name}.",
+      "My surname is {last_name}.",
+      "{relative} sends their regards.",
+    ]],
+    ["Contact", [
+      "Please reply to {email}.",
+      "My other address is {email_2}.",
+      "You can call me on {phone}.",
+      "Written another way, that's {phone_other_format}.",
+      "I live at {address}.",
+      "The PIN code is {pin_code}.",
+    ]],
+    ["Background", [
+      "I was born on {date_of_birth}.",
+      "That's {date_of_birth_other_format}, written out.",
+      "I grew up in {hometown}.",
+      "I study at {institution}.",
+      "Everyone there just says {institution_short}.",
+      "I work in the {lab}.",
+      "My advisor is {advisor}.",
+      "{advisor_bare} reviewed my last draft.",
+      "Before that I interned at {employer}.",
+      "{manager} was my manager there.",
+    ]],
+    ["Code and machines", [
+      "My code is on GitHub as {github}.",
+      "My site is {website}.",
+      "The thesis lives in a private repo called {private_repo}.",
+      "My laptop is called {hostname}.",
+      "My username is {linux_user}.",
+      "My files are under {home_dir}/projects.",
+      "I run jobs on {cluster} as {cluster_user}.",
+      "They're charged to the {slurm_account} account.",
+    ]],
+  ];
+
+  const INDIC = [
+    "আমার নাম {name_bengali}।",
+    "কাল {name_bengali} আসবে।",
+    "मेरा नाम {name_devanagari} है।",
+    "कल {name_devanagari} से बात हुई।",
+    "என் பெயர் {name_tamil}.",
+    "{full_name} / {name_bengali} / {name_devanagari}",
+  ];
+
+  const SENSITIVE = [
+    "I have {sensitive_term}. What should I keep in mind when travelling?",
+    "Can you suggest a weekly routine that works with {sensitive_term}?",
+  ];
+
+  // One block of the terminal dump. {i}, {hex}, {mm}, {size}, {job} are filled per block.
+  const DUMP_BLOCK = [
+    "{linux_user}@{hostname}:~$ cd {home_dir}/projects/repo-{i}",
+    "{linux_user}@{hostname}:~/projects/repo-{i}$ git log -1",
+    "commit {hex}",
+    "Author: {full_name} <{email}>",
+    "Date:   Mon Oct 26 10:{mm}:00 2026 +0530",
+    "",
+    "    fix: path handling under {home_dir}/projects/repo-{i}",
+    "",
+    "{linux_user}@{hostname}:~/projects/repo-{i}$ ls -la",
+    "drwxr-xr-x  5 {linux_user} {linux_user}  4096 Oct 26 10:{mm} .",
+    "-rw-r--r--  1 {linux_user} {linux_user} {size} Oct 26 10:{mm} train.py",
+    "{linux_user}@{hostname}:~/projects/repo-{i}$ ssh {cluster_user}@{cluster}",
+    "[{cluster_user}@{cluster} ~]$ sbatch -A {slurm_account} train.sh",
+    "Submitted batch job {job}",
+    "[{cluster_user}@{cluster} ~]$ exit",
+  ];
+  const DUMP_TOKENS = new Set(["i", "hex", "mm", "size", "job"]);
+
+  const PLACEHOLDER = /\{([a-z][a-z0-9_]*)\}/g;
+
+  function parseSlots(text) {
+    const slots = {};
+    const problems = [];
+    const seen = new Set();
+    const lines = String(text).replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
+    lines.forEach((line, index) => {
+      const n = index + 1;
+      const trimmed = line.trim();
+      if (trimmed === "" || trimmed.startsWith("#")) return;
+      const eq = line.indexOf("=");
+      if (eq < 0) { problems.push(`line ${n}: no "="`); return; }
+      const key = line.slice(0, eq).trim();
+      const value = line.slice(eq + 1).trim().normalize("NFC");
+      if (!KEY_RE.test(key)) { problems.push(`line ${n}: bad key`); return; }
+      if (!SLOT_KEYS.includes(key)) { problems.push(`line ${n}: unknown slot ${key}`); return; }
+      if (seen.has(key)) { problems.push(`line ${n}: ${key} given twice`); return; }
+      seen.add(key);
+      if (value !== "") slots[key] = value;
+    });
+    return { slots, problems };
+  }
+
+  function needs(template) {
+    return [...template.matchAll(PLACEHOLDER)].map((m) => m[1]).filter((k) => !DUMP_TOKENS.has(k));
+  }
+
+  function usable(template, slots) {
+    return needs(template).every((k) => Object.prototype.hasOwnProperty.call(slots, k));
+  }
+
+  function fill(template, slots, wrap) {
+    return template.replace(PLACEHOLDER, (whole, key) =>
+      Object.prototype.hasOwnProperty.call(slots, key) ? wrap(key, slots[key]) : whole);
+  }
+
+  const plainWrap = (key, value) => value;
+
+  function plainText(slots) {
+    const paragraphs = [];
+    for (const [, sentences] of SECTIONS) {
+      const kept = sentences.filter((t) => usable(t, slots)).map((t) => fill(t, slots, plainWrap));
+      if (kept.length) paragraphs.push(kept.join(" "));
+    }
+    return paragraphs.join("\n\n");
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  }
+
+  function richWrap(key, value) {
+    const v = escapeHtml(value);
+    switch (RICH_KIND[key]) {
+      case "strong": return `<strong>${v}</strong>`;
+      case "code": return `<code>${v}</code>`;
+      case "mailto": return `<a href="mailto:${escapeHtml(encodeURI(value))}">${v}</a>`;
+      case "github":
+        return `<a href="https://github.com/${escapeHtml(encodeURIComponent(value))}">${v}</a>`;
+      case "site": return `<a href="https://${escapeHtml(encodeURI(value))}/">${v}</a>`;
+      default: return `<em>${v}</em>`;
+    }
+  }
+
+  function richHtml(slots) {
+    const parts = [];
+    for (const [title, sentences] of SECTIONS) {
+      const kept = sentences.filter((t) => usable(t, slots));
+      if (!kept.length) continue;
+      // Templates are trusted constants; only slot values need escaping, and richWrap does that.
+      parts.push(`<h3>${escapeHtml(title)}</h3>`);
+      parts.push(`<p>${kept.map((t) => fill(escapeHtml(t), slots, richWrap)).join(" ")}</p>`);
+    }
+    const tableRows = [["Name", "full_name"], ["Email", "email"], ["Phone", "phone"],
+                       ["GitHub", "github"], ["Home folder", "home_dir"]]
+      .filter(([, key]) => Object.prototype.hasOwnProperty.call(slots, key))
+      .map(([label, key]) => `<tr><th>${label}</th><td>${richWrap(key, slots[key])}</td></tr>`);
+    if (tableRows.length) parts.push(`<table>${tableRows.join("")}</table>`);
+    return parts.join("\n");
+  }
+
+  function linesFrom(templates, slots) {
+    return templates.filter((t) => usable(t, slots)).map((t) => fill(t, slots, plainWrap));
+  }
+
+  function indicText(slots) {
+    const lines = linesFrom(INDIC, slots);
+    // The same Bengali line again, decomposed (NFD): veil must match it too (sweep 2026-10-26).
+    if (Object.prototype.hasOwnProperty.call(slots, "name_bengali")) {
+      const decomposed = fill(INDIC[0], slots, plainWrap).normalize("NFD");
+      if (decomposed !== decomposed.normalize("NFC")) lines.push(decomposed);
+    }
+    return lines.join("\n");
+  }
+
+  function sensitiveText(slots) {
+    return linesFrom(SENSITIVE, slots).join("\n");
+  }
+
+  function utf8Bytes(s) {
+    let n = 0;
+    for (const ch of String(s)) {
+      const cp = ch.codePointAt(0);
+      n += cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    }
+    return n;
+  }
+
+  function hex40(seed) {
+    let x = (seed * 2654435761 + 12345) >>> 0;
+    let out = "";
+    while (out.length < 40) {
+      x = (x * 1103515245 + 12345) >>> 0;
+      out += (x >>> 8).toString(16).padStart(6, "0");
+    }
+    return out.slice(0, 40);
+  }
+
+  function dumpText(slots, minBytes = DUMP_MIN_BYTES) {
+    const template = DUMP_BLOCK.filter((t) => usable(t, slots));
+    // Without any slot line the dump would be 50 KB of nothing veil cares about.
+    if (!template.some((t) => needs(t).length > 0)) return "";
+    const blocks = [];
+    let bytes = 0;
+    for (let i = 1; bytes < minBytes; i++) {
+      const tokens = {
+        i: String(i), hex: hex40(i), mm: String(i % 60).padStart(2, "0"),
+        size: String(1000 + ((i * 37) % 9000)).padStart(5, " "), job: String(4400000 + i),
+      };
+      const block = template.map((t) =>
+        fill(t.replace(PLACEHOLDER, (whole, key) => tokens[key] ?? whole), slots, plainWrap)
+      ).join("\n") + "\n";
+      blocks.push(block);
+      bytes += utf8Bytes(block);
+    }
+    return blocks.join("");
+  }
+
+  function escapeRegExp(s) {
+    return s.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");  // "-" is literal here (and "\-" is an error under /u)
+  }
+
+  const WORD = "[\\p{L}\\p{M}\\p{N}_]";
+
+  // Which loaded slots appear in `text` as whole words (case-insensitive, NFC). Phone slots are
+  // also found with different separators. A quick check only: `veil audit` is the real one.
+  function findLeaks(text, slots) {
+    const hay = String(text).normalize("NFC");
+    const found = [];
+    for (const key of SLOT_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(slots, key)) continue;
+      const value = slots[key].normalize("NFC");
+      if (value === "") continue;
+      // Non-ASCII names may carry a glued case ending ("<name>er", board Q17): no end boundary.
+      const end = /[^\x00-\x7F]$/u.test(value) ? "" : `(?!${WORD})`;
+      const re = new RegExp(`(?<!${WORD})${escapeRegExp(value)}${end}`, "iu");
+      if (re.test(hay) || (key.startsWith("phone") && phoneIn(hay, value))) found.push(key);
+    }
+    return found;
+  }
+
+  function phoneIn(hay, value) {
+    const digits = value.replace(/\D/g, "");
+    if (digits.length < 7) return false;
+    const tail = digits.slice(-10);
+    for (const run of hay.match(/[+(\d][\d\s().\-]*\d/g) || []) {
+      if (run.replace(/\D/g, "").includes(tail)) return true;
+    }
+    return false;
+  }
+
+  function verdict(found, expect) {
+    if (expect === "restored") {
+      return found.length ? { ok: true, text: `restored: ${found.length} real value(s) back` }
+                          : { ok: false, text: "no real values found (expected them back)" };
+    }
+    return found.length ? { ok: false, text: `LEAK: ${found.join(", ")}` }
+                        : { ok: true, text: "no loaded real value found" };
+  }
+
+  return {
+    SLOT_KEYS, DUMP_MIN_BYTES, parseSlots, plainText, richHtml, indicText, sensitiveText,
+    dumpText, utf8Bytes, findLeaks, escapeHtml, verdict, needs,
+    templates: () => [...SECTIONS.flatMap(([, s]) => s), ...INDIC, ...SENSITIVE, ...DUMP_BLOCK],
+  };
+})();
+
+if (typeof module !== "undefined") module.exports = Matrix;
+
+if (typeof document !== "undefined") {
+  let slots = {};
+  const $ = (id) => document.getElementById(id);
+  const expect = () => document.querySelector('input[name="expect"]:checked').value;
+
+  function render() {
+    $("src-plain").value = Matrix.plainText(slots);
+    $("src-rich").innerHTML = Matrix.richHtml(slots);
+    const dump = Matrix.dumpText(slots);
+    $("src-dump").value = dump;
+    $("dump-size").textContent = dump ? `${(Matrix.utf8Bytes(dump) / 1024).toFixed(1)} KB` : "";
+    $("src-indic").value = Matrix.indicText(slots);
+    $("src-sensitive").value = Matrix.sensitiveText(slots);
+  }
+
+  function show(target, lines) {
+    const el = $(`${target}-result`);
+    el.className = "";
+    el.replaceChildren();
+    const ul = document.createElement("ul");
+    ul.className = "result";
+    for (const [cls, text] of lines) {
+      const li = document.createElement("li");
+      if (cls) li.className = cls;
+      li.textContent = text;
+      ul.append(li);
+    }
+    el.append(ul);
+  }
+
+  function check(target, text, extra = [], scan = text) {
+    const v = Matrix.verdict(Matrix.findLeaks(scan, slots), expect());
+    const n = Object.keys(slots).length;
+    show(target, [
+      ...extra,
+      ["", `${[...text].length} characters, ${Matrix.utf8Bytes(text)} bytes`],
+      n ? [v.ok ? "ok" : "bad", v.text] : ["warn", "no slots loaded: nothing to check against"],
+    ]);
+  }
+
+  $("slot-file").addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    const { slots: loaded, problems } = Matrix.parseSlots(await file.text());
+    event.target.value = "";
+    slots = loaded;
+    render();
+    const keys = Object.keys(slots);
+    const status = $("load-status");
+    status.className = problems.length ? "warn" : "ok";
+    status.textContent = `Loaded ${keys.length} of ${Matrix.SLOT_KEYS.length} slots` +
+      (problems.length ? ` · ${problems.length} problem(s): ${problems.join("; ")}` : "");
+  });
+
+  $("forget").addEventListener("click", () => {
+    slots = {};
+    render();
+    for (const id of ["dst-plain", "dst-rich"]) $(id).replaceChildren();
+    $("dst-plain").value = "";
+    $("load-status").className = "muted";
+    $("load-status").textContent = "Nothing loaded.";
+  });
+
+  document.addEventListener("click", (event) => {
+    // Links in the rich source are for copying, never for following.
+    if (event.target.closest("a")) event.preventDefault();
+    const sel = event.target.dataset.select;
+    if (sel) {
+      const el = $(sel);
+      if (el.tagName === "TEXTAREA") { el.focus(); el.select(); }
+      else {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(range);
+      }
+    }
+    const chk = event.target.dataset.check;
+    if (chk) check(chk, chk === "dst-plain" ? $(chk).value : $(chk).innerText);
+    const clr = event.target.dataset.clear;
+    if (clr) {
+      if (clr === "dst-plain") $(clr).value = ""; else $(clr).replaceChildren();
+      $(`${clr}-result`).textContent = "Paste something.";
+    }
+  });
+
+  for (const target of ["dst-plain", "dst-rich"]) {
+    $(target).addEventListener("paste", (event) => {
+      const data = event.clipboardData;
+      const types = [...(data?.types || [])];
+      const text = data?.getData("text/plain") || "";
+      const html = types.includes("text/html") ? data.getData("text/html") : "";
+      const richTypes = types.filter((t) => t !== "text/plain");
+      check(target, text, [
+        [richTypes.length ? "warn" : "ok",
+         `types: ${types.join(", ") || "(none)"}` +
+         (richTypes.length ? " (veil writes text/plain only)" : "")],
+      ], html ? `${text}\n${html}` : text);
+    });
+  }
+
+  render();
+}
+</script>
+</body>
+</html>
