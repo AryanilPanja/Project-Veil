@@ -106,9 +106,11 @@ def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
         return False
     if outcome.skipped is not None:
         return True  # rich text only, a Deny: the user must know
-    return bool(
-        outcome.total or outcome.preexisting_fakes or outcome.asked or outcome.generalized
-    ) or (outcome.history in (Forget.FAILED, Forget.PARTIAL))
+    # Fake forms already in the text are normal here (copying an AI answer): only worth a word
+    # when something was also replaced (the stderr line always says it).
+    return bool(outcome.total or outcome.asked or outcome.generalized) or (
+        outcome.history in (Forget.FAILED, Forget.PARTIAL)
+    )
 
 
 def notification(outcome: Outcome) -> Message:

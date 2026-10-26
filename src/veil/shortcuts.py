@@ -458,5 +458,5 @@ def manual_steps(
     command = veil_command() if command is None else list(command)
     lines = ["System Settings → Keyboard → Shortcuts → Add New → Command or Script, then:"]
     for shortcut in chosen:
-        lines.append(f"  {shortcut.keys}  {exec_value([*command, *shortcut.args])}")
+        lines.append(f"  {shortcut.keys:<12}{exec_value([*command, *shortcut.args])}")
     return lines

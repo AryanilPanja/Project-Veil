@@ -89,15 +89,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
-        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/R/K) as System Settings would",
+        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V) as System "
+        "Settings would",
     )
     shortcuts.add_argument(
         "--key",
         action="append",
         default=[],
         metavar="NAME=KEYS",
-        help="use another key, e.g. --key restore=Meta+Alt+E (names: sanitize, "
-        "from-selection, restore, toggle; repeatable)",
+        help="use another key, e.g. --key restore=Meta+Alt+X (names: sanitize, from-selection, "
+        "restore, toggle, paste, paste-terminal; repeatable)",
     )
     mode = shortcuts.add_mutually_exclusive_group()
     mode.add_argument("--remove", action="store_true", help="remove veil's hotkeys again")

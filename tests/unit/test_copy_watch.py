@@ -191,6 +191,16 @@ class TestQuiet:
     def test_nothing_replaced_is_silent(self):
         assert not messages.worth_notifying(Outcome(Action.SANITIZE), auto=True)
 
+    def test_copied_answer_with_fakes_is_silent(self):
+        # Copying an AI answer while ON: full of fake forms, nothing real to replace.
+        assert not messages.worth_notifying(
+            Outcome(Action.SANITIZE, preexisting_fakes=4), auto=True
+        )
+
+    def test_fakes_plus_replacements_notify(self):
+        outcome = Outcome(Action.SANITIZE, replaced={"name": 1}, preexisting_fakes=2)
+        assert messages.worth_notifying(outcome, auto=True)
+
     def test_replacements_notify(self):
         outcome = Outcome(Action.SANITIZE, replaced={"name": 1})
         assert messages.worth_notifying(outcome, auto=True)
@@ -216,6 +226,16 @@ class TestCli:
         board.offers[Selection.CLIPBOARD] = {"text/plain": b"ordinary words"}
         run(capsys, "sanitize", "--auto")
         assert notifications == []
+
+    def test_copying_an_answer_is_silent(self, board, capsys, notifications):
+        board.offers[Selection.CLIPBOARD] = {
+            "text/plain": FAKE.encode(),
+            "text/html": b"<p>answer</p>",
+        }
+        _, _, err = run(capsys, "sanitize", "--auto")
+        assert notifications == []
+        assert board.types() == ["text/plain"]  # the rich version is still dropped
+        assert "already contained" in err  # stderr (the service log) still says it
 
     def test_auto_image_is_silent(self, board, capsys, notifications):
         board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}

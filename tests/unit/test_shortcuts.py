@@ -267,6 +267,7 @@ class TestInstall:
         lines = manual_steps(COMMAND)
         assert lines[0].startswith("System Settings → Keyboard → Shortcuts → Add New")
         assert "  Meta+Alt+K  /venv/bin/python -m veil toggle --from-hotkey" in lines
+        assert "  Alt+V       /venv/bin/python -m veil clip paste" in lines  # aligned
 
 
 class TestKbuildsycoca:
@@ -678,3 +679,17 @@ def test_empty_sequences_are_not_keys(kglobalaccel):
         assert bus.keys(TOGGLE) == []
     finally:
         bus.close()
+
+
+def test_help_names_every_shortcut(capsys):
+    from veil import cli
+
+    with pytest.raises(SystemExit):
+        cli.main(["install-shortcuts", "--help"])
+    # argparse wraps lines after a hyphen ("paste-" / "terminal"): undo that before matching
+    out = " ".join(capsys.readouterr().out.split()).replace("- ", "-")
+    for shortcut in SHORTCUTS:
+        assert shortcut.name in out, shortcut.name
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "Meta+Alt+V/C/E/K" in capsys.readouterr().out  # the command list's summary
