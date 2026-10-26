@@ -5,7 +5,9 @@
 """
 
 import argparse
+import dataclasses
 import os
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -48,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
         ("sanitize", "real → fake: the clipboard, in place, as plain text only"),
         ("from-selection", "real → fake: the highlighted text (PRIMARY) into the clipboard"),
         ("restore", "HUMAN-ONLY: fake → real in the clipboard (it then holds your real details)"),
+        ("paste", "sanitize the clipboard, then paste it into the focused window (Alt+V)"),
     ):
         clip_cmd = clip_commands.add_parser(name, help=help_text)
         clip_cmd.add_argument(
@@ -57,28 +60,28 @@ def build_parser() -> argparse.ArgumentParser:
             "about in the terminal, or denied without one",
         )
 
-    commands.add_parser("on", help="switch veil back ON (the kill switch)")
+    on = commands.add_parser("on", help="veil ON: every copy is sanitized (Meta+Alt+K)")
     off = commands.add_parser(
         "off",
-        help="HUMAN-ONLY: switch veil OFF; clipboard hotkeys stop sanitizing "
-        "(asks you to type 'off')",
+        help="HUMAN-ONLY: veil OFF: copy and paste are normal (asks you to type 'off')",
     )
     toggle = commands.add_parser(
-        "toggle", help="HUMAN-ONLY: OFF if on (asks you to type 'off'), ON if off"
+        "toggle", help="ON if off; OFF if on (HUMAN-ONLY: asks for confirmation)"
     )
     for cmd in (off, toggle):
         cmd.add_argument(
             "--from-hotkey",
             action="store_true",
-            help="confirm with a notification button instead of the terminal (for the "
-            "kill-switch hotkey); no click within 30 s = veil stays ON",
+            help="confirm switching OFF with one click in a notification instead of the "
+            "terminal (for the hotkey); no click within 30 s = veil stays ON",
         )
+    for cmd in (on, toggle):
         cmd.add_argument(
             "--for",
             dest="duration",
             type=_duration,
             metavar="DURATION",
-            help="switch back ON automatically after this long (e.g. 30m, 2h; up to 24h)",
+            help="switch OFF by itself after this long (e.g. 30m, 2h; up to 24h)",
         )
     commands.add_parser("status", help="ON or OFF (exit 0 = on, 3 = off)")
     timer = commands.add_parser("kill-switch-timer")  # run by systemd timers; not listed
@@ -86,21 +89,37 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
-        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/R/K) as System Settings would",
+        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V) as System "
+        "Settings would",
     )
     shortcuts.add_argument(
         "--key",
         action="append",
         default=[],
         metavar="NAME=KEYS",
-        help="use another key, e.g. --key restore=Meta+Alt+E (names: sanitize, "
-        "from-selection, restore, toggle; repeatable)",
+        help="use another key, e.g. --key restore=Meta+Alt+X (names: sanitize, from-selection, "
+        "restore, toggle, paste, paste-terminal; repeatable)",
     )
     mode = shortcuts.add_mutually_exclusive_group()
     mode.add_argument("--remove", action="store_true", help="remove veil's hotkeys again")
     mode.add_argument(
         "--print", action="store_true", help="only print the manual steps; change nothing"
     )
+    mode.add_argument(
+        "--status",
+        action="store_true",
+        help="show what is installed and which key KDE really has (read-only)",
+    )
+
+    paste = clip_commands.choices["paste"]
+    paste.add_argument(
+        "--terminal", action="store_true", help="paste with Ctrl+Shift+V (terminals)"
+    )
+    # Run by the copy watcher after every clipboard change (veil ON; ADR-0031): not listed.
+    clip_commands.choices["sanitize"].add_argument(
+        "--auto", action="store_true", help=argparse.SUPPRESS
+    )
+    clip_commands.add_parser("watch")  # the veil-watch service's command; not listed
 
     persona = commands.add_parser("persona", help="manage your persona")
     persona_commands = persona.add_subparsers(dest="persona_command", metavar="SUBCOMMAND")
@@ -311,56 +330,54 @@ def _duration(text: str):
 
 
 def _switch_command(args: argparse.Namespace) -> int:
-    """The kill switch (ADR-0018). OFF only ever by a human at a terminal (typed 'off')."""
+    """veil ON / OFF (ADR-0031): ON = the copy watcher sanitizes every copy. Switching OFF is a
+    human decision: a typed 'off' at a terminal, or one click from the hotkey."""
     from veil import killswitch
     from veil.clip import notify
 
     config, now = paths.config_dir(), killswitch.utc_now()
-    reading = killswitch.read(config)
+    watcher = killswitch.detect_watcher()
+    reading = killswitch.read(config, watcher)
     if reading.problem:
         ui.err(f"veil: warning: {reading.problem}")
     if args.command == "status":
         ui.out(killswitch.status_line(reading, now))
-        return int(ExitCode.OFF if reading.switch.is_off(now) else ExitCode.OK)
+        return int(ExitCode.OK if reading.is_on(now) else ExitCode.OFF)
     timers = killswitch.detect_timers()
     if args.command == "kill-switch-timer":
-        message = killswitch.on_timer(args.event, config, timers, now)
+        message = killswitch.on_timer(args.event, config, watcher, timers, now)
         if message is not None:
             notify.detect().notify(message)
         return int(ExitCode.OK)
-    turn_off = args.command == "off" or (
-        args.command == "toggle" and not reading.switch.is_off(now)
-    )
-    if not turn_off:
-        was_off = reading.switch.is_off(now)
-        killswitch.switch_on(config, timers)
-        ui.out("veil: ON" if was_off or reading.problem else "veil: ON (it already was)")
-        if was_off:
-            notify.detect().notify(killswitch.on_message())
+    turn_on = args.command == "on" or (args.command == "toggle" and not reading.watching)
+    if turn_on:
+        switch, scheduled = killswitch.switch_on(
+            config, watcher, timers, now, getattr(args, "duration", None)
+        )
+        ui.out(killswitch.status_line(killswitch.Reading(switch, True), now))
+        if not scheduled:
+            ui.err(
+                "veil: warning: couldn't schedule the end-time timer; the first copy after the "
+                "end time switches veil OFF"
+            )
+        notify.detect().notify(killswitch.on_message(switch, now))
         return int(ExitCode.OK)
-    duration = args.duration
+    if not reading.watching and not reading.switch.on:
+        ui.out("veil: OFF (it already was)")
+        return int(ExitCode.OK)
     if args.from_hotkey:
         # A click in a notification: a person at the desktop (ADR-0018). An agent running this
         # only pops up the question; it can't click it.
         choose = killswitch.detect_chooser()
         if choose is None:
             raise Aborted("can't ask for confirmation (notify-send is missing); veil stays ON")
-        confirmed, duration = killswitch.confirm_by_notification(choose, duration)
-        if not confirmed:
-            raise Aborted("not switched off (no Off button clicked); veil stays ON")
-        now = killswitch.utc_now()  # the question may have waited up to 30 s
-    elif not ui.confirm_typed(
-        "Switch veil OFF? Clipboard hotkeys will stop sanitizing copied text.", "off"
-    ):
+        if not killswitch.confirm_by_notification(choose):
+            raise Aborted("not switched off (Switch OFF wasn't clicked); veil stays ON")
+    elif not ui.confirm_typed("Switch veil OFF? Copies won't be sanitized any more.", "off"):
         raise Aborted("not switched off (confirmation not given); veil stays ON")
-    switch, scheduled = killswitch.switch_off(config, timers, now, duration)
-    ui.out(killswitch.status_line(killswitch.Reading(switch), now))
-    if not scheduled:
-        ui.err(
-            "veil: warning: couldn't schedule the reminder/expiry notifications "
-            "(systemd user timers); veil still switches back ON on time when it's next used"
-        )
-    notify.detect().notify(killswitch.off_message(switch, now))
+    killswitch.switch_off(config, watcher, timers)
+    ui.out("veil: OFF, copy and paste are normal")
+    notify.detect().notify(killswitch.off_message())
     return int(ExitCode.OK)
 
 
@@ -389,6 +406,18 @@ def _shortcuts_command(args: argparse.Namespace) -> int:
         if bus is not None and not _bus_running(bus):
             bus.close()
             bus = None
+        if args.status:
+            rows = shortcuts.status(bus)
+            for row in rows:
+                live = ", ".join(row.live_keys) or "none"
+                state = "ok" if row.ok else "NOT WORKING"
+                ui.out(
+                    f"  {row.shortcut.name:<15} file: {row.file_keys or 'missing':<11} "
+                    f"KDE: {live:<11} {state}"
+                )
+            if bus is None:
+                ui.err("veil: KDE's shortcut service isn't reachable; only files were checked")
+            return int(ExitCode.OK if all(r.ok for r in rows) else ExitCode.FINDINGS)
         rebuild = shortcuts.kbuildsycoca()
         if args.remove:
             shortcuts.remove(bus, rebuild)
@@ -427,38 +456,33 @@ def _bus_running(bus) -> bool:
 
 
 def _clip_command(args: argparse.Namespace) -> int:
-    from veil.clip import commands, history, messages, notify
+    started = time.monotonic()  # ≈ the hotkey press (paste waits for its keys to be up)
+    from veil.clip import commands, history, messages, notify, watch
     from veil.clip.io import detect
     from veil.engine.load import load_engine
     from veil.timing import STAGES
+
+    if args.clip_command == "watch":
+        watch.run()  # replaces this process with wl-paste --watch
+        return int(ExitCode.OK)  # only when execv is faked (tests)
 
     def load():
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
-    off = _switched_off()
-    if off:
-        action = {
-            "sanitize": commands.Action.SANITIZE,
-            "from-selection": commands.Action.FROM_SELECTION,
-        }
-        outcome = commands.Outcome(
-            action.get(args.clip_command, commands.Action.RESTORE), commands.Skip.OFF
-        )
-        for line in messages.stderr_lines(outcome):
-            ui.err(line)
-        if not args.no_notify:
-            notify.detect().notify(messages.notification(outcome))
-        return int(ExitCode.OK)
+    auto = args.clip_command == "sanitize" and args.auto
+    if auto:
+        watch.drain_stdin()
     board = None
     try:
         board = detect()
         if args.clip_command == "restore":
             outcome = commands.restore(board, load)
-        else:
-            forward = {"sanitize": commands.sanitize, "from-selection": commands.from_selection}
-            outcome = forward[args.clip_command](
-                board, load, _asker(args.no_notify), history.detect()
+        elif args.clip_command == "from-selection":
+            outcome = commands.from_selection(board, load, _asker(args.no_notify), history.detect())
+        else:  # sanitize, paste
+            outcome = commands.sanitize(
+                board, load, _asker(args.no_notify), history.detect(), auto=auto
             )
     except (Exception, KeyboardInterrupt) as error:
         # Fail closed (M2.5, spec §4.4), then let `main` report the error and pick the exit code.
@@ -467,22 +491,43 @@ def _clip_command(args: argparse.Namespace) -> int:
         if not args.no_notify:
             notify.detect().notify(messages.error_notification(messages.error_detail(error), scrub))
         raise
+    if args.clip_command == "paste":
+        from veil.clip import paste
+
+        if paste.should_paste(outcome):
+            outcome = dataclasses.replace(
+                outcome,
+                pasted=paste.inject(
+                    paste.chord(args.terminal), config=paths.config_dir(), started=started
+                ),
+            )
     for line in messages.stderr_lines(outcome):
         ui.err(line)
-    if not args.no_notify:
+    if not args.no_notify and messages.worth_notifying(outcome, auto=auto):
         notify.detect().notify(messages.notification(outcome))
+    if auto:
+        _end_if_due(args.no_notify)
     STAGES.report()
     return int(ExitCode.OK)
 
 
-def _switched_off() -> bool:
-    """The kill switch, for the clip commands. An unreadable state file means ON (warned)."""
+def _end_if_due(no_notify: bool) -> None:
+    """After a watcher run: if the ON time the user chose is up, switch OFF and say so. The copy
+    that triggered this run was still sanitized. The watcher service is stopped last: stopping
+    it ends this process too."""
     from veil import killswitch
+    from veil.clip import notify
 
-    reading = killswitch.read(paths.config_dir())
-    if reading.problem:
-        ui.err(f"veil: warning: {reading.problem}")
-    return reading.switch.is_off(killswitch.utc_now())
+    config = paths.config_dir()
+    switch, _ = killswitch.read_switch(config)
+    if not switch.expired(killswitch.utc_now()):
+        return
+    killswitch.write(config, killswitch.OFF)
+    killswitch.detect_timers().cancel()
+    ui.err("veil: OFF (its time is up); copy and paste are normal")
+    if not no_notify:
+        notify.detect().notify(killswitch.off_message(expired=True))
+    killswitch.detect_watcher().stop()
 
 
 def _asker(no_notify: bool):

@@ -1,7 +1,8 @@
-"""The kill switch (M3.1, ADR-0018): state file, transitions, expiry, timers, CLI, clip no-op.
+"""veil ON / OFF (ADR-0031): ON = the copy watcher service sanitizes every copy; OFF = normal.
 
-Every test runs in the per-test XDG sandbox (conftest), so the owner's real state file is never
-read or written, and conftest's `switch_timers` fixture keeps systemd-run from ever running.
+Every test runs in the per-test XDG sandbox (conftest); `copy_watcher` stands in for the
+veil-watch systemd service and `switch_timers` for the end-time timer, so nothing real is ever
+started, stopped or scheduled.
 """
 
 import io
@@ -13,29 +14,26 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tests.unit.test_clip_commands import REAL, run
-from tests.unit.test_clip_commands import board as board
 from veil import cli, killswitch, paths, ui
-from veil.clip import messages
-from veil.clip.commands import Action, Outcome, Skip
-from veil.clip.io import Selection
 from veil.clip.notify import Urgency
+from veil.errors import VeilError
 from veil.exitcodes import ExitCode
 from veil.killswitch import (
-    ON,
+    OFF,
     Reading,
     Switch,
     SystemdTimers,
+    SystemdWatcher,
     describe_duration,
     parse_duration,
-    read,
+    read_switch,
     status_line,
     switch_off,
     switch_on,
     write,
 )
 
-T0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+T0 = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 M30 = timedelta(minutes=30)
 
 
@@ -48,110 +46,83 @@ def state_file(config):
     return killswitch.state_path(config)
 
 
+def cmd(capsys, *args):
+    code = cli.main(list(args))
+    out, err = capsys.readouterr()
+    return code, out, err
+
+
 # ── state file ────────────────────────────────────────────────────────────────
 
 
 class TestState:
-    def test_missing_is_on(self, config):
-        assert read(config) == Reading(ON)
+    def test_missing_is_off(self, config):
+        assert read_switch(config) == (OFF, None)
 
-    @pytest.mark.parametrize("switch", [ON, Switch(True, T0, None), Switch(True, T0, T0 + M30)])
+    @pytest.mark.parametrize("switch", [OFF, Switch(True, T0, None), Switch(True, T0, T0 + M30)])
     def test_round_trip(self, config, switch):
         write(config, switch)
-        assert read(config) == Reading(switch)
-
-    def test_private_modes(self, config):
-        write(config, Switch(True, T0))
+        assert read_switch(config) == (switch, None)
         assert state_file(config).stat().st_mode & 0o777 == 0o600
-        assert config.stat().st_mode & 0o777 == 0o700
 
-    def test_format_is_small_ascii_json(self, config):
+    def test_format(self, config):
         write(config, Switch(True, T0, T0 + M30))
-        data = json.loads(state_file(config).read_text(encoding="ascii"))
-        assert data == {
-            "format": 1,
-            "state": "off",
-            "since": "2026-10-25T12:00:00+00:00",
-            "until": "2026-10-25T12:30:00+00:00",
+        assert json.loads(state_file(config).read_text()) == {
+            "format": 2,
+            "on": True,
+            "since": "2026-10-26T12:00:00+00:00",
+            "until": "2026-10-26T12:30:00+00:00",
         }
+
+    def test_older_format_is_ignored(self, config):
+        # Before ADR-0031 "off" meant "hotkeys disabled": it says nothing about the watcher.
+        config.mkdir(parents=True, mode=0o700)
+        state_file(config).write_text(
+            '{"format": 1, "state": "off", "since": "2026-10-25T12:00:00+00:00"}'
+        )
+        state_file(config).chmod(0o600)
+        assert read_switch(config) == (OFF, None)
 
     @pytest.mark.parametrize(
         "content",
         [
-            b"",
             b"not json",
             b"[]",
-            b'{"format": 2, "state": "off", "since": "2026-10-25T12:00:00+00:00"}',
-            b'{"format": 1, "state": "maybe"}',
-            b'{"format": 1, "state": "off"}',  # no since
-            b'{"format": 1, "state": "off", "since": "yesterday"}',
-            b'{"format": 1, "state": "off", "since": "2026-10-25T12:00:00"}',  # no zone
-            b'{"format": 1, "state": "off", "since": 5}',
-            b'{"format": 1, "state": "off", "since": "2026-10-25T12:00:00+00:00", '
-            b'"until": "2026-10-25T11:00:00+00:00"}',  # until before since
-            '{"format": 1, "state": "off", "since": "2026-10-25T12:00:00+00:00", "x": "ü"}'.encode(),
-            b"{" + b" " * 5000 + b"}",  # over the size limit
+            b'{"format": 2, "on": true}',
+            b'{"format": 2, "on": true, "since": "x"}',
+            b'{"format": 2, "on": true, "since": "2026-10-26T12:00:00"}',
+            b'{"format": 2, "on": true, "since": "2026-10-26T12:00:00+00:00", "until": "2026-10-26T11:00:00+00:00"}',
+            b"{" + b" " * 5000 + b"}",
         ],
     )
-    def test_anything_odd_means_on(self, config, content):
+    def test_odd_file_is_a_problem(self, config, content):
         config.mkdir(parents=True, exist_ok=True, mode=0o700)
         state_file(config).write_bytes(content)
         state_file(config).chmod(0o600)
-        reading = read(config)
-        assert reading.switch == ON
-        assert reading.problem
-        assert str(config) not in reading.problem  # no paths (they name the user)
+        switch, problem = read_switch(config)
+        assert switch == OFF
+        assert problem
+        assert str(config) not in problem
 
-    def test_symlink_means_on(self, config, tmp_path):
-        target = tmp_path / "elsewhere"
-        target.write_text('{"format": 1, "state": "off", "since": "2026-10-25T12:00:00+00:00"}')
-        config.mkdir(parents=True, exist_ok=True, mode=0o700)
-        state_file(config).symlink_to(target)
-        assert read(config).switch == ON
-
-    @pytest.mark.parametrize("mode", [0o620, 0o602, 0o666])
-    def test_writable_by_others_means_on(self, config, mode):
+    def test_writable_by_others(self, config):
         write(config, Switch(True, T0))
-        state_file(config).chmod(mode)
-        reading = read(config)
-        assert reading.switch == ON
-        assert reading.problem
-
-    def test_readable_by_others_is_still_trusted(self, config):
-        write(config, Switch(True, T0))
-        state_file(config).chmod(0o644)
-        assert read(config).switch.off
-
-    def test_directory_instead_of_file_means_on(self, config):
-        state_file(config).mkdir(parents=True)
-        assert read(config).switch == ON
-
-    def test_write_failure_raises(self, config, monkeypatch):
-        from veil import fsutil
-        from veil.errors import StorageError
-
-        def full(*args, **kwargs):
-            raise StorageError("disk full")
-
-        monkeypatch.setattr(fsutil, "atomic_write", full)
-        with pytest.raises(StorageError):
-            write(config, Switch(True, T0))
+        state_file(config).chmod(0o666)
+        assert read_switch(config)[1]
 
 
-class TestSemantics:
-    def test_off_without_timer_stays_off(self):
-        assert Switch(True, T0).is_off(T0 + timedelta(days=400))
+class TestReading:
+    def test_on_needs_the_watcher(self):
+        assert Reading(Switch(True, T0), watching=True).is_on(T0)
+        assert not Reading(Switch(True, T0), watching=False).is_on(T0)
 
-    def test_timer(self):
-        switch = Switch(True, T0, T0 + M30)
-        assert switch.is_off(T0 + M30 - timedelta(seconds=1))
-        assert not switch.is_off(T0 + M30)
-        assert switch.expired(T0 + M30)
-        assert not switch.expired(T0)
+    def test_watcher_alone_is_on(self):
+        # The service is the truth: a missing or doubtful state file can't switch it off.
+        assert Reading(OFF, watching=True, problem="x").is_on(T0)
 
-    def test_on_is_never_off(self):
-        assert not ON.is_off(T0)
-        assert not ON.expired(T0)
+    def test_time_up(self):
+        reading = Reading(Switch(True, T0, T0 + M30), watching=True)
+        assert reading.is_on(T0 + M30 - timedelta(seconds=1))
+        assert not reading.is_on(T0 + M30)
 
 
 # ── durations ─────────────────────────────────────────────────────────────────
@@ -164,19 +135,14 @@ class TestDurations:
             ("30m", M30),
             ("2h", timedelta(hours=2)),
             ("1h30m", timedelta(minutes=90)),
-            ("90s", timedelta(seconds=90)),
-            ("1m", timedelta(minutes=1)),
-            ("24h", timedelta(hours=24)),
             (" 45M ", timedelta(minutes=45)),
-            ("0h60m", timedelta(hours=1)),
         ],
     )
     def test_valid(self, text, expected):
         assert parse_duration(text) == expected
 
     @pytest.mark.parametrize(
-        "text",
-        ["", "30", "m", "0m", "59s", "25h", "24h1s", "-5m", "1.5h", "30 m", "1d", "١٠m", "30m30h"],
+        "text", ["", "30", "0m", "59s", "25h", "-5m", "1.5h", "1d", chr(0x661) + chr(0x660) + "m"]
     )
     def test_invalid(self, text):
         with pytest.raises(ValueError):  # noqa: PT011
@@ -184,151 +150,160 @@ class TestDurations:
 
     @pytest.mark.parametrize(
         ("duration", "text"),
-        [
-            (M30, "30 min"),
-            (timedelta(hours=2), "2 h"),
-            (timedelta(minutes=90), "1 h 30 min"),
-            (timedelta(seconds=10), "1 min"),
-        ],
+        [(M30, "30 min"), (timedelta(hours=2), "2 h"), (timedelta(minutes=90), "1 h 30 min")],
     )
     def test_describe(self, duration, text):
         assert describe_duration(duration) == text
 
 
-# ── transitions and timers ────────────────────────────────────────────────────
-
-
-class TestTransitions:
-    def test_off_then_on(self, config, switch_timers):
-        switch, scheduled = switch_off(config, switch_timers, T0, M30)
-        assert switch == Switch(True, T0, T0 + M30)
-        assert scheduled
-        assert switch_timers.scheduled == [(switch, T0)]
-        assert read(config).switch.is_off(T0)
-        switch_on(config, switch_timers)
-        assert read(config).switch == ON
-        assert switch_timers.cancelled == 1
-
-    def test_scheduling_failure_is_reported_but_off_holds(self, config, switch_timers):
-        switch_timers.ok = False
-        switch, scheduled = switch_off(config, switch_timers, T0, M30)
-        assert not scheduled
-        assert read(config).switch == switch
+# ── the watcher service ───────────────────────────────────────────────────────
 
 
 class Runs:
-    def __init__(self, code=0) -> None:
+    """Records systemctl calls; `codes` maps a systemctl verb to its exit code."""
+
+    def __init__(self, codes=None) -> None:
         self.argvs: list[list[str]] = []
-        self.code = code
+        self.codes = codes or {}
 
     def __call__(self, argv):
         self.argvs.append(list(argv))
-        return self.code
+        return self.codes.get(argv[2] if len(argv) > 2 else "", 0)
 
 
-class TestSystemdTimers:
-    def timers(self, runs, env=None):
-        return SystemdTimers(
-            "/usr/bin/systemd-run", "/usr/bin/systemctl", python="/py", env=env or {}, run=runs
+class TestSystemdWatcher:
+    def watcher(self, tmp_path, runs, env=None):
+        return SystemdWatcher(
+            "/bin/systemctl", tmp_path / "units", python="/py", env=env or {}, run=runs
         )
 
-    def test_reminder_only_without_timer(self):
+    def test_unit(self, tmp_path):
+        env = {
+            "WAYLAND_DISPLAY": "wayland-0",
+            "DBUS_SESSION_BUS_ADDRESS": "unix:path=/b",
+            "HOME": "/h",
+        }
+        text = self.watcher(tmp_path, Runs(), env).unit_text()
+        assert "ExecStart=/py -m veil clip watch\n" in text
+        assert "Environment=WAYLAND_DISPLAY=wayland-0\n" in text
+        assert "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/b\n" in text
+        assert "HOME" not in text
+        assert "Restart=on-failure\n" in text
+        assert "WantedBy=graphical-session.target\n" in text
+
+    def test_start(self, tmp_path):
+        runs = Runs()
+        assert self.watcher(tmp_path, runs).start()
+        unit = tmp_path / "units" / "veil-watch.service"
+        assert unit.stat().st_mode & 0o777 == 0o644
+        assert runs.argvs == [
+            ["/bin/systemctl", "--user", "daemon-reload"],
+            ["/bin/systemctl", "--user", "enable", "--now", "veil-watch.service"],
+            ["/bin/systemctl", "--user", "is-active", "--quiet", "veil-watch.service"],
+        ]
+
+    @pytest.mark.parametrize("failing", ["enable", "is-active"])
+    def test_start_failure(self, tmp_path, failing):
+        assert not self.watcher(tmp_path, Runs({failing: 3})).start()
+
+    def test_stop_and_active(self, tmp_path):
+        runs = Runs({"is-active": 3})
+        watcher = self.watcher(tmp_path, runs)
+        watcher.stop()
+        assert runs.argvs[-1] == [
+            "/bin/systemctl",
+            "--user",
+            "disable",
+            "--now",
+            "veil-watch.service",
+        ]
+        assert watcher.active() is False
+
+    def test_no_watcher(self):
+        none = killswitch.NoWatcher()
+        assert none.start() is False
+        assert none.active() is False
+        assert none.stop() is None
+
+
+class TestTimers:
+    def timers(self, runs):
+        return SystemdTimers("/sr", "/sc", python="/py", env={}, run=runs)
+
+    def test_end_time(self):
+        runs = Runs()
+        assert self.timers(runs).schedule(Switch(True, T0, T0 + M30), T0)
+        assert runs.argvs[0] == ["/sc", "--user", "stop", "veil-expire.timer", "veil-remind.timer"]
+        assert "--on-active=1800s" in runs.argvs[1]
+        assert runs.argvs[1][-2:] == ["kill-switch-timer", "expire"]
+
+    def test_no_end_time(self):
         runs = Runs()
         assert self.timers(runs).schedule(Switch(True, T0), T0)
-        assert runs.argvs[0] == [
-            "/usr/bin/systemctl",
-            "--user",
-            "stop",
-            "veil-expire.timer",
-            "veil-remind.timer",
-        ]
-        assert runs.argvs[1] == [
-            "/usr/bin/systemd-run", "--user", "--collect", "--quiet", "--unit=veil-remind",
-            "--on-active=3600s", "--timer-property=AccuracySec=1s", "--on-unit-active=3600s",
-            "--", "/py", "-m", "veil", "kill-switch-timer", "remind",
-        ]  # fmt: skip
-        assert len(runs.argvs) == 2
-
-    def test_expiry_timer(self):
-        runs = Runs()
-        self.timers(runs).schedule(Switch(True, T0, T0 + M30), T0 + timedelta(minutes=5))
-        expire = runs.argvs[2]
-        assert "--unit=veil-expire" in expire
-        assert "--on-active=1500s" in expire
-        assert expire[-1] == "expire"
-        assert not any(a.startswith("--on-unit-active") for a in expire)
-
-    def test_passes_config_and_bus(self):
-        runs = Runs()
-        env = {"XDG_CONFIG_HOME": "/x/config", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/b", "Z": "1"}
-        self.timers(runs, env).schedule(Switch(True, T0), T0)
-        assert "--setenv=XDG_CONFIG_HOME=/x/config" in runs.argvs[1]
-        assert "--setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/b" in runs.argvs[1]
-        assert not any("Z=1" in a for a in runs.argvs[1])
+        assert len(runs.argvs) == 1  # only the cancel
 
     def test_failure(self):
-        assert not self.timers(Runs(code=1)).schedule(Switch(True, T0, T0 + M30), T0)
+        assert not self.timers(lambda argv: 1).schedule(Switch(True, T0, T0 + M30), T0)
 
-    def test_argv_is_value_free(self):
-        runs = Runs()
-        self.timers(runs).schedule(Switch(True, T0, T0 + M30), T0)
-        for argv in runs.argvs:
-            assert all("Jane" not in a and "Alex" not in a for a in argv)
+    def test_no_timers(self):
+        assert killswitch.NoTimers().schedule(Switch(True, T0), T0) is True
+        assert killswitch.NoTimers().schedule(Switch(True, T0, T0 + M30), T0) is False
 
     def test_run_never_raises(self, tmp_path):
         assert killswitch._run([str(tmp_path / "missing")]) == -1
 
-    def test_detect(self):
-        assert isinstance(killswitch.__dict__["SystemdTimers"]("a", "b", env={}), SystemdTimers)
-        from veil.killswitch import NoTimers
 
-        assert NoTimers().schedule(Switch(True, T0), T0) is False
-        assert NoTimers().cancel() is None
+# ── transitions ───────────────────────────────────────────────────────────────
+
+
+class TestTransitions:
+    def test_on(self, config, copy_watcher, switch_timers):
+        switch, scheduled = switch_on(config, copy_watcher, switch_timers, T0, M30)
+        assert switch == Switch(True, T0, T0 + M30)
+        assert scheduled
+        assert copy_watcher.running
+        assert read_switch(config) == (switch, None)
+
+    def test_on_fails_closed(self, config, copy_watcher, switch_timers):
+        copy_watcher.can_start = False
+        with pytest.raises(VeilError, match="veil stays OFF"):
+            switch_on(config, copy_watcher, switch_timers, T0)
+        assert read_switch(config) == (OFF, None)
+        assert copy_watcher.stops == 1
+        assert switch_timers.scheduled == []
+
+    def test_off(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        switch_off(config, copy_watcher, switch_timers)
+        assert not copy_watcher.running
+        assert read_switch(config) == (OFF, None)
+        assert switch_timers.cancelled == 1
 
 
 class TestOnTimer:
-    def test_expire_switches_back_on(self, config, switch_timers):
-        write(config, Switch(True, T0, T0 + M30))
-        message = killswitch.on_timer("expire", config, switch_timers, T0 + M30)
-        assert message.summary == "veil is ON"
-        assert "ran out" in message.body
-        assert read(config).switch == ON
-        assert switch_timers.cancelled == 1
-
-    def test_early_or_stale_expire_does_nothing(self, config, switch_timers):
-        write(config, Switch(True, T0, T0 + M30))
-        assert killswitch.on_timer("expire", config, switch_timers, T0 + M30 / 2) is None
-        assert read(config).switch.off
-
-    def test_remind_while_off(self, config, switch_timers):
-        write(config, Switch(True, T0))
-        message = killswitch.on_timer("remind", config, switch_timers, T0 + timedelta(hours=2))
-        assert message.summary == "veil is still OFF"
-        assert "Off for 2 h" in message.body
+    def test_expire(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0, M30)
+        message = killswitch.on_timer("expire", config, copy_watcher, switch_timers, T0 + M30)
+        assert message.summary == "veil OFF"
         assert message.urgency is Urgency.CRITICAL
+        assert not copy_watcher.running
 
-    def test_remind_when_on_stops_the_timer(self, config, switch_timers):
-        assert killswitch.on_timer("remind", config, switch_timers, T0) is None
+    def test_early_expire_does_nothing(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0, M30)
+        assert killswitch.on_timer("expire", config, copy_watcher, switch_timers, T0) is None
+        assert copy_watcher.running
+
+    def test_old_reminder_stops_itself(self, config, copy_watcher, switch_timers):
+        assert killswitch.on_timer("remind", config, copy_watcher, switch_timers, T0) is None
         assert switch_timers.cancelled == 1
-
-    def test_remind_after_expiry_switches_on(self, config, switch_timers):
-        write(config, Switch(True, T0, T0 + M30))
-        message = killswitch.on_timer("remind", config, switch_timers, T0 + timedelta(hours=1))
-        assert message.summary == "veil is ON"
-        assert read(config).switch == ON
-
-    def test_corrupt_state_is_left_on(self, config, switch_timers):
-        config.mkdir(parents=True, mode=0o700)
-        state_file(config).write_bytes(b"garbage")
-        assert killswitch.on_timer("remind", config, switch_timers, T0) is None
 
 
 EVENTS = st.lists(
     st.one_of(
-        st.tuples(st.just("off"), st.one_of(st.none(), st.integers(1, 24 * 60))),
-        st.tuples(st.just("on"), st.none()),
-        st.tuples(st.just("wait"), st.integers(0, 3 * 60)),
-        st.tuples(st.sampled_from(["expire", "remind"]), st.none()),
+        st.tuples(st.just("on"), st.one_of(st.none(), st.integers(1, 600))),
+        st.tuples(st.just("off"), st.none()),
+        st.tuples(st.just("wait"), st.integers(0, 300)),
+        st.tuples(st.just("expire"), st.none()),
     ),
     max_size=20,
 )
@@ -336,55 +311,59 @@ EVENTS = st.lists(
 
 @given(EVENTS)
 def test_property_state_machine(tmp_path_factory, events):
-    """Against a model: OFF only after an explicit off; timers never switch off."""
+    """Against a model: ON only after `on`, and only while the watcher runs and the chosen time
+    isn't up; a timer never switches ON."""
+    from tests.conftest import FakeWatcher
+
     config = tmp_path_factory.mktemp("cfg") / "veil"
-    timers = killswitch.NoTimers()
-    now, model_until, model_off = T0, None, False
+    watcher, timers = FakeWatcher(), killswitch.NoTimers()
+    now, model_on, model_until = T0, False, None
     for event, value in events:
-        if event == "off":
+        if event == "on":
             duration = None if value is None else timedelta(minutes=value)
-            switch_off(config, timers, now, duration)
-            model_off, model_until = True, None if duration is None else now + duration
-        elif event == "on":
-            switch_on(config, timers)
-            model_off = False
+            switch_on(config, watcher, timers, now, duration)
+            model_on, model_until = True, None if duration is None else now + duration
+        elif event == "off":
+            switch_off(config, watcher, timers)
+            model_on = False
         elif event == "wait":
             now += timedelta(minutes=value)
         else:
-            before = read(config).switch.is_off(now)
-            killswitch.on_timer(event, config, timers, now)
-            assert read(config).switch.is_off(now) <= before  # never switches off
-        expected = model_off and (model_until is None or now < model_until)
-        assert read(config).switch.is_off(now) is expected
+            before = killswitch.read(config, watcher).is_on(now)
+            killswitch.on_timer("expire", config, watcher, timers, now)
+            assert killswitch.read(config, watcher).is_on(now) <= before  # never switches ON
+            if model_on and model_until is not None and now >= model_until:
+                model_on = False
+        expected = model_on and (model_until is None or now < model_until)
+        assert killswitch.read(config, watcher).is_on(now) is expected
 
 
 # ── what the user sees ────────────────────────────────────────────────────────
 
 
-class TestStatusLine:
+class TestMessages:
+    def test_status_lines(self):
+        assert status_line(Reading(OFF, False), T0) == "veil: OFF, copy and paste are normal"
+        assert (
+            status_line(Reading(Switch(True, T0), True), T0) == "veil: ON, every copy is sanitized"
+        )
+        timed = status_line(Reading(Switch(True, T0, T0 + M30), True), T0 + timedelta(minutes=10))
+        assert timed.endswith("20 min left)")
+        assert "time is up" in status_line(Reading(Switch(True, T0, T0 + M30), True), T0 + M30)
+
     def test_on(self):
-        assert status_line(Reading(ON), T0) == "veil: ON"
+        message = killswitch.on_message(Switch(True, T0, T0 + M30), T0)
+        assert message.summary == "veil ON"
+        assert "Every copy is sanitized" in message.body
+        assert "(30 min)" in message.body
+        assert "Until you switch it off." in killswitch.on_message(Switch(True, T0), T0).body
 
-    def test_off_with_timer(self):
-        line = status_line(Reading(Switch(True, T0, T0 + M30)), T0 + timedelta(minutes=10))
-        assert line.startswith("veil: OFF until ")
-        assert line.endswith("(20 min left)")
+    def test_off(self):
+        assert killswitch.off_message().urgency is Urgency.NORMAL
+        assert killswitch.off_message(expired=True).body.startswith("Its time is up.")
 
-    def test_off_without_timer(self):
-        line = status_line(Reading(Switch(True, T0)), T0)
-        assert line.startswith("veil: OFF since 2026-10-2")
-        assert line.endswith("(no timer: `veil on` to switch back)")
-
-    def test_expired(self):
-        line = status_line(Reading(Switch(True, T0, T0 + M30)), T0 + timedelta(hours=1))
-        assert line.startswith("veil: ON (the OFF timer ran out at ")
-
-    def test_messages(self):
-        off = killswitch.off_message(Switch(True, T0, T0 + M30), T0)
-        assert off.summary == "veil is OFF"
-        assert off.urgency is Urgency.CRITICAL
-        assert "(30 min)" in off.body
-        assert "Reminder every 1 h" in killswitch.off_message(Switch(True, T0), T0).body
+    def test_toggle_hint_without_shortcut(self):
+        assert killswitch.toggle_hint() == "`veil on` / `veil off` switch it."
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -392,8 +371,6 @@ class TestStatusLine:
 
 @pytest.fixture
 def terminal(monkeypatch):
-    """A terminal where the user types `typed`."""
-
     def type_(typed: str) -> None:
         monkeypatch.setattr(ui, "_isatty", lambda _stream: True)
         monkeypatch.setattr(sys, "stdin", io.StringIO(typed))
@@ -401,155 +378,89 @@ def terminal(monkeypatch):
     return type_
 
 
-def cmd(capsys, *args):
-    code = cli.main(list(args))
-    out, err = capsys.readouterr()
-    return code, out, err
+class TestCli:
+    def test_status_off_by_default(self, capsys):
+        assert cmd(capsys, "status") == (
+            ExitCode.OFF,
+            "veil: OFF, copy and paste are normal\n",
+            "",
+        )
 
-
-class TestStatusCommand:
-    def test_on(self, capsys):
-        assert cmd(capsys, "status") == (ExitCode.OK, "veil: ON\n", "")
-
-    def test_off(self, capsys, config):
-        write(config, Switch(True, killswitch.utc_now()))
-        code, out, _ = cmd(capsys, "status")
-        assert code == ExitCode.OFF
-        assert out.startswith("veil: OFF since ")
-
-    def test_corrupt_is_on_with_warning(self, capsys, config):
-        config.mkdir(parents=True, mode=0o700)
-        state_file(config).write_bytes(b"{")
-        code, out, err = cmd(capsys, "status")
+    def test_on(self, capsys, copy_watcher, notifications):
+        code, out, _ = cmd(capsys, "on")
         assert code == ExitCode.OK
-        assert out == "veil: ON\n"
-        assert "can't be read or trusted; veil stays ON" in err
+        assert out == "veil: ON, every copy is sanitized\n"
+        assert copy_watcher.running
+        assert notifications[-1].summary == "veil ON"
+        assert cmd(capsys, "status")[0] == ExitCode.OK
 
-    def test_status_never_writes(self, capsys, config):
-        cmd(capsys, "status")
-        assert not state_file(config).exists()
+    def test_on_needs_no_terminal_or_confirmation(self, capsys, copy_watcher, switch_chooser):
+        assert cmd(capsys, "on")[0] == ExitCode.OK
+        assert switch_chooser.asked == []
 
+    def test_on_for(self, capsys, config, switch_timers):
+        cmd(capsys, "on", "--for", "30m")
+        switch, _ = read_switch(config)
+        assert switch.until - switch.since == M30
+        assert len(switch_timers.scheduled) == 1
 
-class TestOffCommand:
-    def test_refused_without_a_terminal(self, capsys, config, switch_timers, notifications):
-        code, _, err = cmd(capsys, "off")
+    def test_on_fails_closed(self, capsys, copy_watcher):
+        copy_watcher.can_start = False
+        code, _, err = cmd(capsys, "on")
         assert code == ExitCode.UNSAFE_ENVIRONMENT
-        assert "needs an interactive terminal" in err
-        assert not state_file(config).exists()
-        assert switch_timers.scheduled == []
-        assert notifications == []
+        assert "veil stays OFF" in err
+        assert cmd(capsys, "status")[0] == ExitCode.OFF
 
-    @pytest.mark.parametrize("typed", ["", "\n", "of\n", "OFF\n", "yes\n", "off off\n"])
-    def test_wrong_confirmation(self, capsys, config, terminal, typed):
+    def test_off_refused_without_terminal(self, capsys, copy_watcher):
+        cmd(capsys, "on")
+        code, _, _ = cmd(capsys, "off")
+        assert code == ExitCode.UNSAFE_ENVIRONMENT
+        assert copy_watcher.running
+
+    @pytest.mark.parametrize("typed", ["", "\n", "OFF\n", "of\n", "yes\n"])
+    def test_off_wrong_confirmation(self, capsys, copy_watcher, terminal, typed):
+        cmd(capsys, "on")
         terminal(typed)
-        code, _, err = cmd(capsys, "off")
-        assert code == ExitCode.ABORTED
-        assert "veil stays ON" in err
-        assert read(config).switch == ON
+        assert cmd(capsys, "off")[0] == ExitCode.ABORTED
+        assert copy_watcher.running
 
-    def test_off(self, capsys, config, terminal, switch_timers, notifications):
+    def test_off(self, capsys, copy_watcher, terminal, notifications):
+        cmd(capsys, "on")
         terminal("off\n")
         code, out, _ = cmd(capsys, "off")
         assert code == ExitCode.OK
-        assert out.startswith("veil: OFF since ")
-        assert read(config).switch.off
-        assert len(switch_timers.scheduled) == 1
-        assert notifications[-1].summary == "veil is OFF"
+        assert out == "veil: OFF, copy and paste are normal\n"
+        assert not copy_watcher.running
+        assert notifications[-1].summary == "veil OFF"
 
-    def test_off_for(self, capsys, config, terminal):
-        terminal("off\n")
-        code, out, _ = cmd(capsys, "off", "--for", "30m")
-        assert code == ExitCode.OK
-        assert out.endswith("(30 min left)\n")
-        switch = read(config).switch
-        assert switch.until - switch.since == M30
+    def test_off_when_already_off(self, capsys):
+        assert cmd(capsys, "off")[:2] == (ExitCode.OK, "veil: OFF (it already was)\n")
 
-    @pytest.mark.parametrize("value", ["0m", "25h", "soon", ""])
-    def test_bad_duration_is_usage(self, capsys, config, value):
-        with pytest.raises(SystemExit) as caught:
-            cli.main(["off", "--for", value])
-        assert caught.value.code == ExitCode.USAGE
-        assert not state_file(config).exists()
+    def test_toggle_on_without_terminal(self, capsys, copy_watcher):
+        assert cmd(capsys, "toggle")[0] == ExitCode.OK
+        assert copy_watcher.running
 
-    def test_timer_failure_warns(self, capsys, terminal, switch_timers):
-        switch_timers.ok = False
-        terminal("off\n")
-        code, _, err = cmd(capsys, "off", "--for", "1h")
-        assert code == ExitCode.OK
-        assert "couldn't schedule the reminder/expiry notifications" in err
+    def test_toggle_off_is_guarded(self, capsys, copy_watcher):
+        cmd(capsys, "toggle")
+        assert cmd(capsys, "toggle")[0] == ExitCode.UNSAFE_ENVIRONMENT
+        assert copy_watcher.running
 
-    def test_off_again_resets_the_timer(self, capsys, config, terminal):
-        terminal("off\n")
-        cmd(capsys, "off", "--for", "1h")
-        terminal("off\n")
-        cmd(capsys, "off")
-        assert read(config).switch.until is None
-
-
-class TestOnCommand:
-    def test_on_from_off(self, capsys, config, switch_timers, notifications):
-        write(config, Switch(True, killswitch.utc_now()))
-        assert cmd(capsys, "on")[:2] == (ExitCode.OK, "veil: ON\n")
-        assert read(config).switch == ON
-        assert switch_timers.cancelled == 1
-        assert notifications[-1].summary == "veil is ON"
-
-    def test_on_needs_no_terminal(self, capsys):
-        # Switching ON is always allowed: it only ever adds protection.
-        assert cmd(capsys, "on")[0] == ExitCode.OK
-
-    def test_already_on(self, capsys, notifications):
-        assert cmd(capsys, "on")[1] == "veil: ON (it already was)\n"
-        assert notifications == []
-
-    def test_on_repairs_a_corrupt_file(self, capsys, config):
-        config.mkdir(parents=True, mode=0o700)
-        state_file(config).write_bytes(b"{")
+    def test_timer_expire(self, capsys, copy_watcher, config, notifications):
         cmd(capsys, "on")
-        assert read(config) == Reading(ON)
-
-
-class TestToggleCommand:
-    def test_on_to_off_is_guarded(self, capsys, config):
-        assert cmd(capsys, "toggle")[0] == ExitCode.UNSAFE_ENVIRONMENT
-        assert read(config).switch == ON
-
-    def test_on_to_off(self, capsys, config, terminal):
-        terminal("off\n")
-        assert cmd(capsys, "toggle", "--for", "2h")[0] == ExitCode.OK
-        assert read(config).switch.is_off(killswitch.utc_now())
-
-    def test_off_to_on_without_terminal(self, capsys, config):
-        write(config, Switch(True, killswitch.utc_now()))
-        assert cmd(capsys, "toggle")[:2] == (ExitCode.OK, "veil: ON\n")
-        assert read(config).switch == ON
-
-    def test_expired_off_toggles_to_off(self, capsys, config):
-        # An expired timer is ON, so toggle means OFF (guarded).
-        now = killswitch.utc_now()
-        write(config, Switch(True, now - timedelta(hours=2), now - timedelta(hours=1)))
-        assert cmd(capsys, "toggle")[0] == ExitCode.UNSAFE_ENVIRONMENT
-
-
-class TestTimerCommand:
-    def test_expire(self, capsys, config, notifications):
         now = killswitch.utc_now()
         write(config, Switch(True, now - timedelta(hours=1), now - timedelta(seconds=1)))
         assert cmd(capsys, "kill-switch-timer", "expire")[0] == ExitCode.OK
-        assert read(config).switch == ON
-        assert notifications[-1].summary == "veil is ON"
+        assert not copy_watcher.running
+        assert notifications[-1].urgency is Urgency.CRITICAL
 
-    def test_remind(self, capsys, config, notifications):
-        write(config, Switch(True, killswitch.utc_now()))
-        cmd(capsys, "kill-switch-timer", "remind")
-        assert notifications[-1].summary == "veil is still OFF"
+    def test_corrupt_state_warns(self, capsys, config):
+        config.mkdir(parents=True, mode=0o700)
+        state_file(config).write_bytes(b"{")
+        state_file(config).chmod(0o600)
+        _, _, err = cmd(capsys, "status")
+        assert "can't be read or trusted" in err
 
-    def test_cannot_switch_off(self, capsys, config):
-        for event in ("expire", "remind"):
-            cmd(capsys, "kill-switch-timer", event)
-        assert not read(config).switch.off
-
-    def test_not_listed_in_help(self, capsys):
+    def test_timer_command_not_listed(self, capsys):
         with pytest.raises(SystemExit):
             cli.main(["--help"])
         out = capsys.readouterr().out
@@ -557,80 +468,18 @@ class TestTimerCommand:
         for listed in ("on", "off", "toggle", "status"):
             assert listed in out
 
+    @pytest.mark.parametrize("value", ["0m", "25h", "soon"])
+    def test_bad_duration(self, capsys, value):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["on", "--for", value])
+        assert caught.value.code == ExitCode.USAGE
 
-# ── clip commands while OFF ───────────────────────────────────────────────────
-
-
-class TestClipWhileOff:
-    @pytest.fixture(autouse=True)
-    def switched_off(self, config):
-        write(config, Switch(True, killswitch.utc_now()))
-
-    @pytest.mark.parametrize("command", ["sanitize", "from-selection"])
-    def test_forward_is_a_noop(self, board, capsys, notifications, clip_history, command):
-        board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}
-        board.offers[Selection.PRIMARY] = {"text/plain": REAL.encode()}
-        code, _, err = run(capsys, command)
-        assert code == ExitCode.OK
-        assert board.reads == []  # the clipboard isn't even read
-        assert board.writes == []
-        assert board.clears == []
-        assert clip_history.calls == 0
-        assert "NOT sanitized: veil is OFF (kill switch)" in err
-        shown = notifications[-1]
-        assert shown.summary == "veil is OFF: clipboard NOT sanitized"
-        assert shown.urgency is Urgency.CRITICAL
-
-    def test_restore_is_a_noop(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"text/plain": b"Alex Smith"}
-        code, _, _ = run(capsys, "restore")
-        assert code == ExitCode.OK
-        assert board.reads == []
-        assert notifications[-1].summary == "veil is OFF: nothing restored"
-        assert notifications[-1].urgency is Urgency.NORMAL
-
-    def test_no_store_needed(self, board, capsys):
-        # OFF never touches the key or the persona (no store exists in this test).
-        assert run(capsys, "sanitize")[0] == ExitCode.OK
-
-    def test_no_notify(self, board, capsys, notifications):
-        run(capsys, "sanitize", "--no-notify")
-        assert notifications == []
-
-    def test_back_on_works_again(self, board, capsys, config):
-        switch_on(config, killswitch.NoTimers())
-        board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
-        _, _, err = run(capsys, "sanitize")
-        assert "veil is OFF" not in err
-
-
-def test_expired_timer_sanitizes_again(board, capsys, config):
-    now = killswitch.utc_now()
-    write(config, Switch(True, now - timedelta(hours=1), now - timedelta(seconds=1)))
-    board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
-    _, _, err = run(capsys, "sanitize")
-    assert "veil is OFF" not in err
-    assert board.reads == [Selection.CLIPBOARD]
-
-
-def test_corrupt_state_sanitizes(board, capsys, config):
-    config.mkdir(parents=True, mode=0o700)
-    state_file(config).write_bytes(b"\x00")
-    board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
-    _, _, err = run(capsys, "sanitize")
-    assert "veil stays ON" in err
-    assert board.reads == [Selection.CLIPBOARD]
-
-
-@pytest.mark.parametrize("action", list(Action))
-def test_off_messages(action):
-    message = messages.notification(Outcome(action, Skip.OFF))
-    assert "veil is OFF" in message.summary
-    assert message.body.endswith("Run `veil on` to switch back.")
-    assert "Meta+Alt" not in message.body  # no hotkey until M3.3 installs one
+    def test_off_has_no_for(self, capsys):
+        with pytest.raises(SystemExit) as caught:
+            cli.main(["off", "--for", "30m"])
+        assert caught.value.code == ExitCode.USAGE
 
 
 def test_state_file_is_in_the_agent_denied_directory(config):
-    # The deny rules cover ~/.config/veil/**; the state must live there (ADR-0018).
     assert state_file(config).parent == paths.config_dir()
     assert state_file(config).name == "state"

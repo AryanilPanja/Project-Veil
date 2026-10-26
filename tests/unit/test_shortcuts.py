@@ -12,8 +12,6 @@ from hypothesis import strategies as st
 from tests.helpers import privatebus
 from tests.unit.test_killswitch import cmd
 from veil import killswitch, shortcuts
-from veil.clip import messages
-from veil.clip.commands import Action, Outcome, Skip
 from veil.exitcodes import ExitCode
 from veil.killswitch import Switch, utc_now
 from veil.shortcuts import (
@@ -70,7 +68,13 @@ class TestKeyCode:
             "Meta+Alt+C",
             "Meta+Alt+E",
             "Meta+Alt+K",
+            "Alt+V",
+            "Alt+Shift+V",
         }
+
+    def test_no_ctrl_v_grab(self):
+        # ADR-0031: Ctrl+C / Ctrl+V stay the applications' own (the copy watcher needs no key).
+        assert not any(s.keys.startswith("Ctrl+") for s in SHORTCUTS)
 
 
 # ── desktop files ─────────────────────────────────────────────────────────────
@@ -153,7 +157,7 @@ class TestExec:
         assert desktop_entry(TOGGLE, COMMAND) == (
             "[Desktop Entry]\n"
             "Type=Application\n"
-            "Name=veil: kill switch (asks before switching off)\n"
+            "Name=veil: ON (sanitize every copy) / OFF\n"
             "Exec=/venv/bin/python -m veil toggle --from-hotkey\n"
             "Icon=security-high\n"
             "NoDisplay=true\n"
@@ -168,6 +172,8 @@ class TestExec:
             "net.local.veil-from-selection.desktop",
             "net.local.veil-restore.desktop",
             "net.local.veil-toggle.desktop",
+            "net.local.veil-paste.desktop",
+            "net.local.veil-paste-terminal.desktop",
         ]
 
     def test_hotkey_commands(self):
@@ -188,7 +194,7 @@ class TestInstall:
     def test_all_installed(self, shortcut_service):
         calls, rebuild = rebuild_counter()
         reports = install(shortcut_service, rebuild, COMMAND)
-        assert [r.result for r in reports] == [Result.INSTALLED] * 4
+        assert [r.result for r in reports] == [Result.INSTALLED] * len(SHORTCUTS)
         for shortcut in SHORTCUTS:
             path = applications_dir() / shortcut.component
             assert path.read_text(encoding="utf-8") == desktop_entry(shortcut, COMMAND)
@@ -261,6 +267,7 @@ class TestInstall:
         lines = manual_steps(COMMAND)
         assert lines[0].startswith("System Settings → Keyboard → Shortcuts → Add New")
         assert "  Meta+Alt+K  /venv/bin/python -m veil toggle --from-hotkey" in lines
+        assert "  Alt+V       /venv/bin/python -m veil clip paste" in lines  # aligned
 
 
 class TestKbuildsycoca:
@@ -282,18 +289,34 @@ class TestKbuildsycoca:
 # ── the hotkey in kill-switch messages ────────────────────────────────────────
 
 
-class TestSwitchBack:
+class TestToggleHint:
     def test_without_shortcut(self):
-        assert killswitch.switch_back() == "Run `veil on` to switch back."
-        body = messages.notification(Outcome(Action.SANITIZE, Skip.OFF)).body
-        assert "Meta+Alt" not in body
+        assert killswitch.toggle_hint() == "`veil on` / `veil off` switch it."
+        assert "Meta+Alt" not in killswitch.off_message().body
 
     def test_with_shortcut(self, shortcut_service):
         install(shortcut_service, lambda: True, COMMAND)
-        assert killswitch.switch_back() == "Run `veil on` or press Meta+Alt+K to switch back."
+        assert killswitch.toggle_hint() == "Meta+Alt+K switches it."
         now = utc_now()
-        assert "Meta+Alt+K" in killswitch.off_message(Switch(True, now), now).body
-        assert "Meta+Alt+K" in messages.notification(Outcome(Action.SANITIZE, Skip.OFF)).body
+        assert "Meta+Alt+K" in killswitch.off_message().body
+        assert "Meta+Alt+K" in killswitch.on_message(Switch(True, now), now).body
+
+
+class TestLegacy:
+    def test_paste_mode_files_are_cleaned_up(self, shortcut_service):
+        folder = applications_dir()
+        folder.mkdir(parents=True)
+        for component in shortcuts.LEGACY_COMPONENTS:
+            (folder / component).write_text("[Desktop Entry]\n")
+        install(shortcut_service, lambda: True, COMMAND)
+        assert not any((folder / c).exists() for c in shortcuts.LEGACY_COMPONENTS)
+
+    def test_remove_cleans_up_too(self):
+        folder = applications_dir()
+        folder.mkdir(parents=True)
+        (folder / shortcuts.LEGACY_COMPONENTS[0]).write_text("[Desktop Entry]\n")
+        remove(None, lambda: True)
+        assert not (folder / shortcuts.LEGACY_COMPONENTS[0]).exists()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -317,7 +340,7 @@ class TestCli:
     def test_install(self, capsys, shortcut_service):
         code, out, err = cmd(capsys, "install-shortcuts")
         assert code == ExitCode.OK
-        assert out.count("installed") == 4
+        assert out.count("installed") == len(SHORTCUTS)
         assert err == ""
         assert installed()
         assert shortcut_service.closed == 1
@@ -368,24 +391,28 @@ class TestCli:
 
 
 class KGlobalAccel:
-    """Just enough of org.kde.KGlobalAccel, recording what arrives over the wire."""
+    """Just enough of org.kde.KGlobalAccel, keyed like the real one: (component, action unique
+    name) from the action id [ComponentUnique, ActionUnique, ComponentFriendly, ActionFriendly]."""
 
     def __init__(self) -> None:
-        self.keys: dict[str, list] = {}
+        self.keys: dict[tuple[str, str], list] = {}
         self.taken: set[int] = set()
 
     def handlers(self):
         return {
             "isGlobalShortcutAvailable": lambda body: ("b", (body[0] not in self.taken,)),
             "doRegister": lambda body: (None, ()),
-            "unregister": lambda body: ("b", (True,)),
+            "unregister": self.unregister,
             "setForeignShortcutKeys": self.set_keys,
-            "shortcutKeys": lambda body: ("a(ai)", (self.keys.get(body[0][0], []),)),
+            "shortcutKeys": lambda body: ("a(ai)", (self.keys.get((body[0][0], body[0][1]), []),)),
         }
 
     def set_keys(self, body):
-        self.keys[body[0][0]] = body[1]
+        self.keys[(body[0][0], body[0][1])] = body[1]
         return None, ()
+
+    def unregister(self, body):
+        return "b", (self.keys.pop((body[0], body[1]), None) is not None,)
 
 
 @pytest.fixture
@@ -410,31 +437,61 @@ class TestJeepney:
         finally:
             bus.close()
         assert all(r.result is Result.INSTALLED for r in reports)
-        assert kglobalaccel.keys["net.local.veil-toggle.desktop"] == [([META_ALT | 0x4B],)]
-        members = [member for member, _ in kglobalaccel.service.calls]
-        assert members[:5] == [
+        # The key is on the _launch action: the one KDE runs the desktop file for.
+        assert kglobalaccel.keys[("net.local.veil-toggle.desktop", "_launch")] == [
+            ([META_ALT | 0x4B],)
+        ]
+        assert all(action == "_launch" for _, action in kglobalaccel.keys)
+        calls = [c for c in kglobalaccel.service.calls if "veil-sanitize" in str(c[1])]
+        assert [member for member, _ in calls] == [
+            "unregister",  # the legacy action, if any
+            "shortcutKeys",
             "isGlobalShortcutAvailable",
             "doRegister",
             "unregister",
             "setForeignShortcutKeys",
             "shortcutKeys",
         ]
-        register = next(
-            body for member, body in kglobalaccel.service.calls if member == "doRegister"
-        )
-        assert register == (
-            ["net.local.veil-sanitize.desktop", "veil: sanitize the clipboard", "", ""],
-        )
 
-    def test_action_id(self, kglobalaccel):
+    def test_action_id_order_matches_kglobalaccel(self, kglobalaccel):
+        # kglobalaccel.h: ComponentUnique = 0, ActionUnique = 1, ComponentFriendly = 2,
+        # ActionFriendly = 3.
         bus = RealJeepneyShortcuts(kglobalaccel.address)
         try:
+            bus.register(TOGGLE)
             bus.set_keys(TOGGLE, [1])
         finally:
             bus.close()
+        member, body = kglobalaccel.service.calls[0]
+        assert member == "doRegister"
+        assert body == ([TOGGLE.component, "", TOGGLE.title, ""],)
         member, body = kglobalaccel.service.calls[-1]
         assert member == "setForeignShortcutKeys"
-        assert body[0] == [TOGGLE.component, TOGGLE.title, "_launch", TOGGLE.title]
+        assert body[0] == [TOGGLE.component, "_launch", TOGGLE.title, TOGGLE.title]
+
+    def test_legacy_action_is_removed(self, kglobalaccel):
+        # What the first M3.3 build left behind: the key on an action named after the title.
+        legacy = (TOGGLE.component, TOGGLE.title)
+        kglobalaccel.keys[legacy] = [([META_ALT | 0x4B],)]
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+        finally:
+            bus.close()
+        assert legacy not in kglobalaccel.keys
+        assert kglobalaccel.keys[(TOGGLE.component, "_launch")] == [([META_ALT | 0x4B],)]
+
+    def test_reinstall_keeps_own_keys(self, kglobalaccel):
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+            # The real service may call our own key "unavailable": it must not matter.
+            kglobalaccel.taken.update(key_code(s.keys) for s in SHORTCUTS)
+            reports = install(bus, lambda: True, COMMAND)
+        finally:
+            bus.close()
+        assert all(r.result is Result.INSTALLED for r in reports)
+        assert all((applications_dir() / s.component).exists() for s in SHORTCUTS)
 
     def test_taken_over_dbus(self, kglobalaccel):
         kglobalaccel.taken.add(key_code("Meta+Alt+E"))
@@ -444,6 +501,17 @@ class TestJeepney:
         finally:
             bus.close()
         assert {r.shortcut.name: r.result for r in reports}["restore"] is Result.TAKEN
+
+    def test_status_over_dbus(self, kglobalaccel):
+        bus = RealJeepneyShortcuts(kglobalaccel.address)
+        try:
+            install(bus, lambda: True, COMMAND)
+            rows = shortcuts.status(bus)
+        finally:
+            bus.close()
+        assert all(row.ok for row in rows)
+        toggle = next(row for row in rows if row.shortcut.name == "toggle")
+        assert toggle.live_keys == ["Meta+Alt+K"]
 
     def test_not_running(self, tmp_path):
         with privatebus.private_bus(tmp_path) as address:
@@ -505,7 +573,7 @@ class TestOverrides:
         chosen = shortcuts.with_keys({"toggle": "Meta+Alt+J"})
         install(shortcut_service, lambda: True, COMMAND, chosen)
         assert shortcuts.installed_keys(TOGGLE) == "Meta+Alt+J"
-        assert killswitch.switch_back() == "Run `veil on` or press Meta+Alt+J to switch back."
+        assert killswitch.toggle_hint() == "Meta+Alt+J switches it."
         assert shortcut_service.keys_by_component[TOGGLE.component] == [key_code("Meta+Alt+J")]
 
     def test_installed_keys_without_file_or_field(self):
@@ -514,7 +582,7 @@ class TestOverrides:
         folder.mkdir(parents=True)
         (folder / TOGGLE.component).write_text("[Desktop Entry]\nX-Veil-Keys=garbage\n")
         assert shortcuts.installed_keys(TOGGLE) is None
-        assert killswitch.switch_back() == "Run `veil on` to switch back."
+        assert killswitch.toggle_hint() == "`veil on` / `veil off` switch it."
 
     @pytest.mark.usefixtures("session_bus")
     def test_cli_key(self, capsys, shortcut_service):
@@ -544,3 +612,84 @@ class TestOverrides:
         code, _, err = cmd(capsys, "install-shortcuts")
         assert code == ExitCode.FINDINGS
         assert "--key NAME=KEYS" in err
+
+
+# ── --status and key names ────────────────────────────────────────────────────
+
+
+class TestStatus:
+    @pytest.mark.parametrize("keys", ["Meta+Alt+V", "Ctrl+Shift+1", "Meta+Ctrl+Alt+Shift+Z"])
+    def test_key_name_round_trip(self, keys):
+        assert shortcuts.key_name(key_code(keys)) == keys
+
+    def test_nothing_installed(self, shortcut_service):
+        rows = shortcuts.status(shortcut_service)
+        assert [r.ok for r in rows] == [False] * len(SHORTCUTS)
+        assert rows[0].file_keys is None
+
+    def test_installed(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        assert all(r.ok for r in shortcuts.status(shortcut_service))
+
+    def test_file_without_live_key(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        shortcut_service.keys_by_component.clear()
+        rows = shortcuts.status(shortcut_service)
+        assert rows[0].file_keys == "Meta+Alt+V"
+        assert rows[0].live_keys == []
+        assert not rows[0].ok
+
+    def test_service_error_counts_as_no_key(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        shortcut_service.fail = {"keys"}
+        assert not any(r.ok for r in shortcuts.status(shortcut_service))
+
+    @pytest.mark.usefixtures("session_bus")
+    def test_cli(self, capsys, shortcut_service):
+        code, out, _ = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.FINDINGS
+        assert out.count("NOT WORKING") == len(SHORTCUTS)
+        cmd(capsys, "install-shortcuts")
+        code, out, _ = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.OK
+        assert out.count(" ok") == len(SHORTCUTS)
+
+    def test_cli_without_bus(self, capsys, monkeypatch):
+        monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+        code, _, err = cmd(capsys, "install-shortcuts", "--status")
+        assert code == ExitCode.FINDINGS
+        assert "only files were checked" in err
+
+    def test_install_drops_legacy_actions(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        assert shortcut_service.dropped == [s.component for s in SHORTCUTS]
+
+    def test_reinstall_with_own_key_taken(self, shortcut_service):
+        install(shortcut_service, lambda: True, COMMAND)
+        for shortcut in SHORTCUTS:  # the service says "taken" even for our own key
+            shortcut_service.taken[key_code(shortcut.keys)] = "something-else"
+        reports = install(shortcut_service, lambda: True, COMMAND)
+        assert all(r.result is Result.INSTALLED for r in reports)
+
+
+def test_empty_sequences_are_not_keys(kglobalaccel):
+    kglobalaccel.keys[(TOGGLE.component, "_launch")] = [([0],), ([0, 0, 0, 0],)]
+    bus = RealJeepneyShortcuts(kglobalaccel.address)
+    try:
+        assert bus.keys(TOGGLE) == []
+    finally:
+        bus.close()
+
+
+def test_help_names_every_shortcut(capsys):
+    from veil import cli
+
+    with pytest.raises(SystemExit):
+        cli.main(["install-shortcuts", "--help"])
+    # argparse wraps lines after a hyphen ("paste-" / "terminal"): undo that before matching
+    out = " ".join(capsys.readouterr().out.split()).replace("- ", "-")
+    for shortcut in SHORTCUTS:
+        assert shortcut.name in out, shortcut.name
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    assert "Meta+Alt+V/C/E/K" in capsys.readouterr().out  # the command list's summary

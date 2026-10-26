@@ -4,7 +4,8 @@ Each selection holds an offer {mime type: bytes}, like a Wayland clipboard; read
 the real `classify`, so MIME handling matches production.
 """
 
-from veil.clip.io import WRITE_TYPE, ClipContent, Kind, Selection, classify
+from veil.clip import recent
+from veil.clip.io import WRITE_TYPE, ClipContent, Kind, Selection, classify, plain_only
 from veil.errors import ClipboardError
 
 
@@ -39,13 +40,20 @@ class FakeBoard:
         secret = any(t.lower() == "x-kde-passwordmanagerhint" for t in offer)
         if plain is None:
             return ClipContent(kind, secret=secret, type_count=len(offer))
-        return ClipContent(kind, offer[plain].decode(), secret=secret, type_count=len(offer))
+        return ClipContent(
+            kind,
+            offer[plain].decode(),
+            secret=secret,
+            type_count=len(offer),
+            plain_only=plain_only(list(offer)),
+        )
 
     def write_text(self, text: str) -> None:
         if self.fail_write:
             raise ClipboardError("wl-copy failed (exit 1)")
         self.writes.append(text)
         self.offers[Selection.CLIPBOARD] = {WRITE_TYPE: text.encode()}
+        recent.remember(text)  # as the real backends do
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         if self.fail_clear:

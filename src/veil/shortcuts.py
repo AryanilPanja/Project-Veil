@@ -64,14 +64,31 @@ SHORTCUTS = (
     Shortcut(
         "restore", "veil: restore real details in the clipboard", "Meta+Alt+E", ("clip", "restore")
     ),
+    # veil ON = every copy sanitized; OFF = normal (ADR-0031). OFF asks for one click.
     Shortcut(
         "toggle",
-        "veil: kill switch (asks before switching off)",
+        "veil: ON (sanitize every copy) / OFF",
         "Meta+Alt+K",
         ("toggle", "--from-hotkey"),
     ),
+    # Sanitize, then paste (ADR-0030): the paste chord follows Ctrl+V / Ctrl+Shift+V.
+    Shortcut("paste", "veil: sanitize, then paste", "Alt+V", ("clip", "paste")),
+    Shortcut(
+        "paste-terminal",
+        "veil: sanitize, then paste in a terminal",
+        "Alt+Shift+V",
+        ("clip", "paste", "--terminal"),
+    ),
 )
-TOGGLE = SHORTCUTS[-1]
+TOGGLE = next(s for s in SHORTCUTS if s.name == "toggle")
+
+# Shortcut files earlier builds may have left behind (paste mode, withdrawn by ADR-0031): the
+# installer and --remove clean them up.
+LEGACY_COMPONENTS = (
+    "net.local.veil-paste-mode.desktop",
+    "net.local.veil-mode-paste.desktop",
+    "net.local.veil-mode-paste-terminal.desktop",
+)
 KEYS_FIELD = "X-Veil-Keys"  # the key actually installed (after any --key override)
 
 
@@ -198,6 +215,10 @@ class ShortcutBus(Protocol):
 
     def forget(self, shortcut: Shortcut) -> None: ...
 
+    def drop_legacy(self, shortcut: Shortcut) -> None: ...
+
+    def block(self, blocked: bool) -> None: ...
+
 
 class ShortcutError(Exception):
     """A D-Bus failure (its error name only)."""
@@ -217,9 +238,10 @@ class JeepneyShortcuts:
         return bool(self._method("isGlobalShortcutAvailable", "is", (code, component))[0])
 
     def register(self, shortcut: Shortcut) -> None:
-        # As System Settings does: a dummy action makes the service read the desktop file
-        # (which creates its _launch action); the dummy is then unregistered.
-        self._method("doRegister", "as", ([shortcut.component, shortcut.title, "", ""],))
+        # As System Settings does (globalaccelmodel.cpp addApplication): a dummy action makes
+        # the service build the component from the desktop file, which creates its _launch
+        # action; the dummy is then unregistered.
+        self._method("doRegister", "as", (_action_id(shortcut.component, "", shortcut.title, ""),))
         self._method("unregister", "ss", (shortcut.component, ""))
 
     def set_keys(self, shortcut: Shortcut, codes: list[int]) -> None:
@@ -229,10 +251,21 @@ class JeepneyShortcuts:
 
     def keys(self, shortcut: Shortcut) -> list[int]:
         sequences = self._method("shortcutKeys", "as", (_action(shortcut),))[0]
-        return [sequence[0][0] for sequence in sequences if sequence[0]]
+        # An unset sequence comes back as [0] (or [0, 0, 0, 0]): not a key.
+        return [sequence[0][0] for sequence in sequences if sequence[0] and sequence[0][0]]
 
     def forget(self, shortcut: Shortcut) -> None:
         self.set_keys(shortcut, [])
+
+    def block(self, blocked: bool) -> None:
+        """Pause (or resume) every global shortcut: veil's own pasted Ctrl+V must not trigger
+        paste mode's Ctrl+V shortcut again. Not saved anywhere; a session-wide flag."""
+        self._method("blockGlobalShortcuts", "b", (blocked,))
+
+    def drop_legacy(self, shortcut: Shortcut) -> None:
+        """Remove the action that veil before 2026-10-25 created by mistake (named after the
+        title, with the key, but not runnable): it would keep the key from `_launch`."""
+        self._method("unregister", "ss", (shortcut.component, shortcut.title))
 
     def close(self) -> None:
         if self._connection is not None:
@@ -261,7 +294,15 @@ class JeepneyShortcuts:
 
 
 def _action(shortcut: Shortcut) -> list[str]:
-    return [shortcut.component, shortcut.title, LAUNCH, shortcut.title]
+    """The `_launch` action: the one the service runs the desktop file for."""
+    return _action_id(shortcut.component, LAUNCH, shortcut.title, shortcut.title)
+
+
+def _action_id(component: str, action: str, component_title: str, action_title: str) -> list[str]:
+    # KGlobalAccel::actionIdFields: ComponentUnique = 0, ActionUnique = 1,
+    # ComponentFriendly = 2, ActionFriendly = 3 (kglobalaccel.h). Getting this order wrong
+    # creates an ordinary, never-run action named after the title (the M3.3 owner check).
+    return [component, action, component_title, action_title]
 
 
 # ── install / remove ──────────────────────────────────────────────────────────
@@ -293,6 +334,7 @@ def install(
     command = veil_command() if command is None else list(command)
     folder = applications_dir()
     folder.mkdir(parents=True, exist_ok=True)  # a shared, existing folder: modes left alone
+    _remove_legacy(bus, folder)
     for shortcut in chosen:
         _write(folder / shortcut.component, desktop_entry(shortcut, command))
     rebuild()
@@ -308,7 +350,10 @@ def install(
 def _install_one(bus: ShortcutBus, shortcut: Shortcut) -> Result:
     code = key_code(shortcut.keys)
     try:
-        if not bus.available(code, shortcut.component):
+        with contextlib.suppress(Exception):  # nothing to clean up on a fresh install
+            bus.drop_legacy(shortcut)
+        # Our own _launch holding the key isn't "taken" (re-running the installer).
+        if code not in bus.keys(shortcut) and not bus.available(code, shortcut.component):
             return Result.TAKEN
         bus.register(shortcut)
         bus.set_keys(shortcut, [code])
@@ -317,16 +362,64 @@ def _install_one(bus: ShortcutBus, shortcut: Shortcut) -> Result:
         return Result.FAILED
 
 
-def remove(bus: ShortcutBus | None, rebuild: Rebuild) -> list[Report]:
+def remove(
+    bus: ShortcutBus | None,
+    rebuild: Rebuild,
+    chosen: Sequence[Shortcut] = SHORTCUTS,
+) -> list[Report]:
     folder = applications_dir()
-    for shortcut in SHORTCUTS:
+    _remove_legacy(bus, folder)
+    for shortcut in chosen:
         if bus is not None:
             # Nothing registered, or no service: fine either way.
             with contextlib.suppress(Exception):
                 bus.forget(shortcut)
+            with contextlib.suppress(Exception):
+                bus.drop_legacy(shortcut)
         (folder / shortcut.component).unlink(missing_ok=True)
     rebuild()
-    return [Report(shortcut, Result.REMOVED) for shortcut in SHORTCUTS]
+    return [Report(shortcut, Result.REMOVED) for shortcut in chosen]
+
+
+def _remove_legacy(bus: ShortcutBus | None, folder: Path) -> None:
+    """Unregister and delete the shortcuts of withdrawn features (LEGACY_COMPONENTS)."""
+    for component in LEGACY_COMPONENTS:
+        name = component.removeprefix("net.local.veil-").removesuffix(".desktop")
+        legacy = Shortcut(name, name, "V", ())
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                bus.forget(legacy)
+        (folder / component).unlink(missing_ok=True)
+
+
+@dataclass(frozen=True)
+class Status:
+    shortcut: Shortcut
+    file_keys: str | None  # the key its desktop file records, or None (no file)
+    live_keys: list[str]  # what the shortcut service has on its _launch action
+
+    @property
+    def ok(self) -> bool:
+        return self.file_keys is not None and self.live_keys == [self.file_keys]
+
+
+def status(bus: ShortcutBus | None) -> list[Status]:
+    """Read-only: what is installed, per shortcut (`veil install-shortcuts --status`)."""
+    result = []
+    for shortcut in SHORTCUTS:
+        live: list[str] = []
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                live = [key_name(code) for code in bus.keys(shortcut)]
+        result.append(Status(shortcut, installed_keys(shortcut), live))
+    return result
+
+
+def key_name(code: int) -> str:
+    """The inverse of key_code: 0x18000056 → "Meta+Alt+V"."""
+    mods = [m for m in MODIFIER_ORDER if code & MODIFIERS[m]]
+    key = code & ~sum(MODIFIERS.values())
+    return "+".join([*mods, chr(key) if 0x20 < key < 0x7F else f"0x{key:x}"])
 
 
 def _write(path: Path, text: str) -> None:
@@ -365,5 +458,5 @@ def manual_steps(
     command = veil_command() if command is None else list(command)
     lines = ["System Settings → Keyboard → Shortcuts → Add New → Command or Script, then:"]
     for shortcut in chosen:
-        lines.append(f"  {shortcut.keys}  {exec_value([*command, *shortcut.args])}")
+        lines.append(f"  {shortcut.keys:<12}{exec_value([*command, *shortcut.args])}")
     return lines

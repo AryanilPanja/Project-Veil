@@ -34,6 +34,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
+from veil.clip import recent
 from veil.clip.ask import Asker, Decision, deny_all
 from veil.clip.history import Forget, Forgetter
 from veil.clip.io import Clipboard, Kind, Selection
@@ -62,7 +63,15 @@ class Skip(Enum):
     RICH_ONLY = "no plain text (rich text only)"
     SECRET = "marked as a password by a password manager"  # noqa: S105 - a message
     DENIED = "sensitive detail withheld"
-    OFF = "veil is OFF (kill switch)"
+    OWN = "veil's own write"  # the copy watcher saw veil's result (or a restore) come back
+
+
+class Pasted(Enum):
+    """`veil clip paste` (ADR-0030): what happened after sanitizing."""
+
+    PASTED = "pasted"
+    REFUSED = "refused"  # the desktop's permission dialog said no
+    FAILED = "failed"  # the desktop portal didn't work
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,7 @@ class Outcome:
     generalized: int = 0  # spans replaced by their generalized phrase
     history: Forget | None = None  # removing the original from the clipboard history (M2.6)
     residue: dict[str, int] = field(default_factory=dict)  # restore: fake-name leftovers (M2.7)
+    pasted: Pasted | None = None  # `clip paste` only (ADR-0030)
 
     @property
     def changed(self) -> bool:
@@ -97,9 +107,17 @@ class Scrub(Enum):
 
 
 def sanitize(
-    board: Clipboard, load: EngineLoader, ask: Asker = deny_all, forget: Forgetter | None = None
+    board: Clipboard,
+    load: EngineLoader,
+    ask: Asker = deny_all,
+    forget: Forgetter | None = None,
+    *,
+    auto: bool = False,
 ) -> Outcome:
-    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE, ask, forget)
+    """`auto`: run by the copy watcher after every clipboard change (ADR-0031): veil's own
+    writes are skipped before anything is decrypted, and a plain-text clipboard that sanitizing
+    wouldn't change isn't rewritten (so the watcher never loops on its own result)."""
+    return _forward(board, load, Selection.CLIPBOARD, Action.SANITIZE, ask, forget, auto=auto)
 
 
 def from_selection(
@@ -131,12 +149,16 @@ def _forward(
     action: Action,
     ask: Asker,
     forget: Forgetter | None,
+    *,
+    auto: bool = False,
 ) -> Outcome:
     content = board.read(source)
     STAGES.mark("read")
     skipped = _skip(content.kind, content.secret, source)
     if skipped is not None:
         return Outcome(action, skipped)
+    if auto and recent.seen(content.text or ""):
+        return Outcome(action, Skip.OWN)
     engine = load()
     text = content.text or ""  # TEXT always carries text
 
@@ -160,6 +182,9 @@ def _forward(
     out, counts = engine.forward_counted(text)
     preexisting = sum(engine.ambiguous(text).values())
     STAGES.mark("translate")
+    if auto and out == content.text and content.plain_only:
+        # Nothing to change and no rich types to drop: rewriting would only wake the watcher.
+        return Outcome(action, preexisting_fakes=preexisting)
     board.write_text(out)  # always CLIPBOARD, plain text only
     STAGES.mark("write")
     history = None

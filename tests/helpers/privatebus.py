@@ -25,8 +25,10 @@ CONFIG = """<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configurat
 </busconfig>
 """
 
-# member → handler(body) returning (signature, reply body); raise LookupError for an error reply
-Handler = Callable[[tuple], tuple[str | None, tuple]]
+# member → handler(body) returning (signature, reply body) or (signature, reply body, signals to
+# send after the reply); raise LookupError for an error reply. The message being answered is
+# `service.current` (for its sender, path...).
+Handler = Callable[[tuple], tuple]
 
 
 @contextlib.contextmanager
@@ -54,15 +56,20 @@ def private_bus(directory: Path) -> Iterator[str]:
 
 
 class FakeService(threading.Thread):
-    """Owns `name` on the bus and answers method calls on `interface` with `handlers`.
-    Unknown members get UnknownMethod; a handler raising LookupError gets a Failed error."""
+    """Owns `name` on the bus and answers method calls on `interface` (one name or a set) with
+    `handlers`. Unknown members get UnknownMethod; a handler raising LookupError gets a Failed
+    error."""
 
-    def __init__(self, address: str, name: str, interface: str, handlers: dict[str, Handler]):
+    def __init__(
+        self, address: str, name: str, interface: str | set[str], handlers: dict[str, Handler]
+    ):
         super().__init__(daemon=True)
         from jeepney import message_bus
         from jeepney.io.blocking import open_dbus_connection
 
-        self.interface, self.handlers = interface, handlers
+        self.interfaces = {interface} if isinstance(interface, str) else set(interface)
+        self.handlers = handlers
+        self.current = None
         self.calls: list[tuple[str, tuple]] = []
         self.stop = threading.Event()
         self.connection = open_dbus_connection(address)
@@ -81,20 +88,25 @@ class FakeService(threading.Thread):
             header = message.header
             if header.message_type is not MessageType.method_call:
                 continue
-            if header.fields.get(HeaderFields.interface) != self.interface:
+            if header.fields.get(HeaderFields.interface) not in self.interfaces:
                 continue
             member = header.fields.get(HeaderFields.member)
             self.calls.append((member, message.body))
             handler = self.handlers.get(member)
+            signals = []
             if handler is None:
                 reply = new_error(message, "org.freedesktop.DBus.Error.UnknownMethod")
             else:
+                self.current = message
                 try:
-                    signature, body = handler(message.body)
+                    signature, body, *rest = handler(message.body)
                     reply = new_method_return(message, signature, body)
+                    signals = rest[0] if rest else []
                 except LookupError:
                     reply = new_error(message, "org.freedesktop.DBus.Error.Failed")
             self.connection.send(reply)
+            for signal in signals:
+                self.connection.send(signal)
 
     def close(self) -> None:
         self.stop.set()
@@ -104,7 +116,7 @@ class FakeService(threading.Thread):
 
 @contextlib.contextmanager
 def fake_service(
-    address: str, name: str, interface: str, handlers: dict[str, Handler]
+    address: str, name: str, interface: str | set[str], handlers: dict[str, Handler]
 ) -> Iterator[FakeService]:
     service = FakeService(address, name, interface, handlers)
     service.start()

@@ -185,6 +185,8 @@ class FakeShortcutService:
         self.taken: dict[int, str] = {}  # key → another component that holds it
         self.registered: list[str] = []
         self.fail: set[str] = set()
+        self.dropped: list[str] = []
+        self.blocks: list[bool] = []
         self.closed = 0
 
     def _check(self, name):
@@ -216,6 +218,14 @@ class FakeShortcutService:
         self._check("forget")
         self.keys_by_component.pop(shortcut.component, None)
 
+    def drop_legacy(self, shortcut) -> None:
+        self._check("drop_legacy")
+        self.dropped.append(shortcut.component)
+
+    def block(self, blocked) -> None:
+        self._check("block")
+        self.blocks.append(blocked)
+
     def close(self) -> None:
         self.closed += 1
 
@@ -234,6 +244,104 @@ def shortcut_service(monkeypatch):
 
     monkeypatch.setattr(shortcuts, "JeepneyShortcuts", lambda *a, **k: fake)
     monkeypatch.setattr(shortcuts, "kbuildsycoca", lambda *a, **k: rebuild)
+    return fake
+
+
+class FakeKeyboard:
+    """Stands in for the desktop portal's keyboard: records chords, never types anything.
+    Set `.refuse` / `.fail` to script the portal; `.opened_with` records the restore tokens."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.pressed: list = []
+        self.opened_with: list = []
+        self.closed = False
+        self.refuse = self.fail = False
+        self.timings: dict = {}
+
+    def open(self, token=None):
+        from veil.clip import portal
+
+        self.opened_with.append(token)
+        if self.refuse:
+            raise portal.Refused("cancelled in the dialog")
+        if self.fail:
+            raise portal.PortalError("portal error x")
+        return "restored-token"
+
+    def press(self, keys) -> None:
+        self.pressed.append(tuple(keys))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class KeyboardRecorder:
+    def __init__(self) -> None:
+        self.keyboards: list = []
+        self.refuse = self.fail = False
+
+    def __call__(self, *args, **kwargs):
+        keyboard = FakeKeyboard()
+        keyboard.refuse, keyboard.fail = self.refuse, self.fail
+        self.keyboards.append(keyboard)
+        return keyboard
+
+    @property
+    def pressed(self) -> list:
+        return [chord for k in self.keyboards for chord in k.pressed]
+
+
+@pytest.fixture(autouse=True)
+def portal_keyboard(monkeypatch):
+    """No test may press keys through the real desktop portal (it types into the owner's
+    windows). Returns the recorder: `.pressed` lists every chord "pressed"."""
+    from veil.clip import paste, portal
+
+    recorder = KeyboardRecorder()
+    monkeypatch.setattr(portal, "RemoteKeyboard", recorder)
+    monkeypatch.setattr(paste, "RELEASE_WAIT", 0.0)
+    return recorder
+
+
+@pytest.fixture(autouse=True)
+def recent_writes(monkeypatch, tmp_path_factory):
+    """The recent-writes list lives in a per-test folder, never the real runtime directory."""
+    from veil.clip import recent
+
+    folder = tmp_path_factory.mktemp("runtime")
+    folder.chmod(0o700)
+    monkeypatch.setattr(recent, "location", lambda: folder / recent.FILE)
+    return folder / recent.FILE
+
+
+class FakeWatcher:
+    """Stands in for the veil-watch systemd service: never runs systemctl."""
+
+    def __init__(self) -> None:
+        self.running = False
+        self.starts = self.stops = 0
+        self.can_start = True
+
+    def start(self) -> bool:
+        self.starts += 1
+        self.running = self.can_start
+        return self.running
+
+    def stop(self) -> None:
+        self.stops += 1
+        self.running = False
+
+    def active(self) -> bool:
+        return self.running
+
+
+@pytest.fixture(autouse=True)
+def copy_watcher(monkeypatch):
+    """No test may start or stop the owner's real copy watcher service (veil ON / OFF)."""
+    from veil import killswitch
+
+    fake = FakeWatcher()
+    monkeypatch.setattr(killswitch, "detect_watcher", lambda *a, **k: fake)
     return fake
 
 
