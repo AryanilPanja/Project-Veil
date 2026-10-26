@@ -12,8 +12,6 @@ from hypothesis import strategies as st
 from tests.helpers import privatebus
 from tests.unit.test_killswitch import cmd
 from veil import killswitch, shortcuts
-from veil.clip import messages
-from veil.clip.commands import Action, Outcome, Skip
 from veil.exitcodes import ExitCode
 from veil.killswitch import Switch, utc_now
 from veil.shortcuts import (
@@ -70,7 +68,13 @@ class TestKeyCode:
             "Meta+Alt+C",
             "Meta+Alt+E",
             "Meta+Alt+K",
+            "Alt+V",
+            "Alt+Shift+V",
         }
+
+    def test_no_ctrl_v_grab(self):
+        # ADR-0031: Ctrl+C / Ctrl+V stay the applications' own (the copy watcher needs no key).
+        assert not any(s.keys.startswith("Ctrl+") for s in SHORTCUTS)
 
 
 # ── desktop files ─────────────────────────────────────────────────────────────
@@ -153,7 +157,7 @@ class TestExec:
         assert desktop_entry(TOGGLE, COMMAND) == (
             "[Desktop Entry]\n"
             "Type=Application\n"
-            "Name=veil: kill switch (asks before switching off)\n"
+            "Name=veil: ON (sanitize every copy) / OFF\n"
             "Exec=/venv/bin/python -m veil toggle --from-hotkey\n"
             "Icon=security-high\n"
             "NoDisplay=true\n"
@@ -168,6 +172,8 @@ class TestExec:
             "net.local.veil-from-selection.desktop",
             "net.local.veil-restore.desktop",
             "net.local.veil-toggle.desktop",
+            "net.local.veil-paste.desktop",
+            "net.local.veil-paste-terminal.desktop",
         ]
 
     def test_hotkey_commands(self):
@@ -188,7 +194,7 @@ class TestInstall:
     def test_all_installed(self, shortcut_service):
         calls, rebuild = rebuild_counter()
         reports = install(shortcut_service, rebuild, COMMAND)
-        assert [r.result for r in reports] == [Result.INSTALLED] * 4
+        assert [r.result for r in reports] == [Result.INSTALLED] * len(SHORTCUTS)
         for shortcut in SHORTCUTS:
             path = applications_dir() / shortcut.component
             assert path.read_text(encoding="utf-8") == desktop_entry(shortcut, COMMAND)
@@ -282,18 +288,34 @@ class TestKbuildsycoca:
 # ── the hotkey in kill-switch messages ────────────────────────────────────────
 
 
-class TestSwitchBack:
+class TestToggleHint:
     def test_without_shortcut(self):
-        assert killswitch.switch_back() == "Run `veil on` to switch back."
-        body = messages.notification(Outcome(Action.SANITIZE, Skip.OFF)).body
-        assert "Meta+Alt" not in body
+        assert killswitch.toggle_hint() == "`veil on` / `veil off` switch it."
+        assert "Meta+Alt" not in killswitch.off_message().body
 
     def test_with_shortcut(self, shortcut_service):
         install(shortcut_service, lambda: True, COMMAND)
-        assert killswitch.switch_back() == "Run `veil on` or press Meta+Alt+K to switch back."
+        assert killswitch.toggle_hint() == "Meta+Alt+K switches it."
         now = utc_now()
-        assert "Meta+Alt+K" in killswitch.off_message(Switch(True, now), now).body
-        assert "Meta+Alt+K" in messages.notification(Outcome(Action.SANITIZE, Skip.OFF)).body
+        assert "Meta+Alt+K" in killswitch.off_message().body
+        assert "Meta+Alt+K" in killswitch.on_message(Switch(True, now), now).body
+
+
+class TestLegacy:
+    def test_paste_mode_files_are_cleaned_up(self, shortcut_service):
+        folder = applications_dir()
+        folder.mkdir(parents=True)
+        for component in shortcuts.LEGACY_COMPONENTS:
+            (folder / component).write_text("[Desktop Entry]\n")
+        install(shortcut_service, lambda: True, COMMAND)
+        assert not any((folder / c).exists() for c in shortcuts.LEGACY_COMPONENTS)
+
+    def test_remove_cleans_up_too(self):
+        folder = applications_dir()
+        folder.mkdir(parents=True)
+        (folder / shortcuts.LEGACY_COMPONENTS[0]).write_text("[Desktop Entry]\n")
+        remove(None, lambda: True)
+        assert not (folder / shortcuts.LEGACY_COMPONENTS[0]).exists()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -317,7 +339,7 @@ class TestCli:
     def test_install(self, capsys, shortcut_service):
         code, out, err = cmd(capsys, "install-shortcuts")
         assert code == ExitCode.OK
-        assert out.count("installed") == 4
+        assert out.count("installed") == len(SHORTCUTS)
         assert err == ""
         assert installed()
         assert shortcut_service.closed == 1
@@ -487,7 +509,8 @@ class TestJeepney:
         finally:
             bus.close()
         assert all(row.ok for row in rows)
-        assert rows[-1].live_keys == ["Meta+Alt+K"]
+        toggle = next(row for row in rows if row.shortcut.name == "toggle")
+        assert toggle.live_keys == ["Meta+Alt+K"]
 
     def test_not_running(self, tmp_path):
         with privatebus.private_bus(tmp_path) as address:
@@ -549,7 +572,7 @@ class TestOverrides:
         chosen = shortcuts.with_keys({"toggle": "Meta+Alt+J"})
         install(shortcut_service, lambda: True, COMMAND, chosen)
         assert shortcuts.installed_keys(TOGGLE) == "Meta+Alt+J"
-        assert killswitch.switch_back() == "Run `veil on` or press Meta+Alt+J to switch back."
+        assert killswitch.toggle_hint() == "Meta+Alt+J switches it."
         assert shortcut_service.keys_by_component[TOGGLE.component] == [key_code("Meta+Alt+J")]
 
     def test_installed_keys_without_file_or_field(self):
@@ -558,7 +581,7 @@ class TestOverrides:
         folder.mkdir(parents=True)
         (folder / TOGGLE.component).write_text("[Desktop Entry]\nX-Veil-Keys=garbage\n")
         assert shortcuts.installed_keys(TOGGLE) is None
-        assert killswitch.switch_back() == "Run `veil on` to switch back."
+        assert killswitch.toggle_hint() == "`veil on` / `veil off` switch it."
 
     @pytest.mark.usefixtures("session_bus")
     def test_cli_key(self, capsys, shortcut_service):
@@ -600,7 +623,7 @@ class TestStatus:
 
     def test_nothing_installed(self, shortcut_service):
         rows = shortcuts.status(shortcut_service)
-        assert [r.ok for r in rows] == [False] * 4
+        assert [r.ok for r in rows] == [False] * len(SHORTCUTS)
         assert rows[0].file_keys is None
 
     def test_installed(self, shortcut_service):
@@ -624,11 +647,11 @@ class TestStatus:
     def test_cli(self, capsys, shortcut_service):
         code, out, _ = cmd(capsys, "install-shortcuts", "--status")
         assert code == ExitCode.FINDINGS
-        assert out.count("NOT WORKING") == 4
+        assert out.count("NOT WORKING") == len(SHORTCUTS)
         cmd(capsys, "install-shortcuts")
         code, out, _ = cmd(capsys, "install-shortcuts", "--status")
         assert code == ExitCode.OK
-        assert out.count(" ok") == 4
+        assert out.count(" ok") == len(SHORTCUTS)
 
     def test_cli_without_bus(self, capsys, monkeypatch):
         monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)

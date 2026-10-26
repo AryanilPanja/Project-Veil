@@ -64,14 +64,31 @@ SHORTCUTS = (
     Shortcut(
         "restore", "veil: restore real details in the clipboard", "Meta+Alt+E", ("clip", "restore")
     ),
+    # veil ON = every copy sanitized; OFF = normal (ADR-0031). OFF asks for one click.
     Shortcut(
         "toggle",
-        "veil: kill switch (asks before switching off)",
+        "veil: ON (sanitize every copy) / OFF",
         "Meta+Alt+K",
         ("toggle", "--from-hotkey"),
     ),
+    # Sanitize, then paste (ADR-0030): the paste chord follows Ctrl+V / Ctrl+Shift+V.
+    Shortcut("paste", "veil: sanitize, then paste", "Alt+V", ("clip", "paste")),
+    Shortcut(
+        "paste-terminal",
+        "veil: sanitize, then paste in a terminal",
+        "Alt+Shift+V",
+        ("clip", "paste", "--terminal"),
+    ),
 )
-TOGGLE = SHORTCUTS[-1]
+TOGGLE = next(s for s in SHORTCUTS if s.name == "toggle")
+
+# Shortcut files earlier builds may have left behind (paste mode, withdrawn by ADR-0031): the
+# installer and --remove clean them up.
+LEGACY_COMPONENTS = (
+    "net.local.veil-paste-mode.desktop",
+    "net.local.veil-mode-paste.desktop",
+    "net.local.veil-mode-paste-terminal.desktop",
+)
 KEYS_FIELD = "X-Veil-Keys"  # the key actually installed (after any --key override)
 
 
@@ -200,6 +217,8 @@ class ShortcutBus(Protocol):
 
     def drop_legacy(self, shortcut: Shortcut) -> None: ...
 
+    def block(self, blocked: bool) -> None: ...
+
 
 class ShortcutError(Exception):
     """A D-Bus failure (its error name only)."""
@@ -237,6 +256,11 @@ class JeepneyShortcuts:
 
     def forget(self, shortcut: Shortcut) -> None:
         self.set_keys(shortcut, [])
+
+    def block(self, blocked: bool) -> None:
+        """Pause (or resume) every global shortcut: veil's own pasted Ctrl+V must not trigger
+        paste mode's Ctrl+V shortcut again. Not saved anywhere; a session-wide flag."""
+        self._method("blockGlobalShortcuts", "b", (blocked,))
 
     def drop_legacy(self, shortcut: Shortcut) -> None:
         """Remove the action that veil before 2026-10-25 created by mistake (named after the
@@ -310,6 +334,7 @@ def install(
     command = veil_command() if command is None else list(command)
     folder = applications_dir()
     folder.mkdir(parents=True, exist_ok=True)  # a shared, existing folder: modes left alone
+    _remove_legacy(bus, folder)
     for shortcut in chosen:
         _write(folder / shortcut.component, desktop_entry(shortcut, command))
     rebuild()
@@ -337,9 +362,14 @@ def _install_one(bus: ShortcutBus, shortcut: Shortcut) -> Result:
         return Result.FAILED
 
 
-def remove(bus: ShortcutBus | None, rebuild: Rebuild) -> list[Report]:
+def remove(
+    bus: ShortcutBus | None,
+    rebuild: Rebuild,
+    chosen: Sequence[Shortcut] = SHORTCUTS,
+) -> list[Report]:
     folder = applications_dir()
-    for shortcut in SHORTCUTS:
+    _remove_legacy(bus, folder)
+    for shortcut in chosen:
         if bus is not None:
             # Nothing registered, or no service: fine either way.
             with contextlib.suppress(Exception):
@@ -348,7 +378,18 @@ def remove(bus: ShortcutBus | None, rebuild: Rebuild) -> list[Report]:
                 bus.drop_legacy(shortcut)
         (folder / shortcut.component).unlink(missing_ok=True)
     rebuild()
-    return [Report(shortcut, Result.REMOVED) for shortcut in SHORTCUTS]
+    return [Report(shortcut, Result.REMOVED) for shortcut in chosen]
+
+
+def _remove_legacy(bus: ShortcutBus | None, folder: Path) -> None:
+    """Unregister and delete the shortcuts of withdrawn features (LEGACY_COMPONENTS)."""
+    for component in LEGACY_COMPONENTS:
+        name = component.removeprefix("net.local.veil-").removesuffix(".desktop")
+        legacy = Shortcut(name, name, "V", ())
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                bus.forget(legacy)
+        (folder / component).unlink(missing_ok=True)
 
 
 @dataclass(frozen=True)

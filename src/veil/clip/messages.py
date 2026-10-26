@@ -10,9 +10,8 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 - an error → critical, saying whether the clipboard was cleared (M2.5).
 """
 
-from veil import killswitch
 from veil.clip.ask import Decision, describe
-from veil.clip.commands import Action, Outcome, Scrub, Skip
+from veil.clip.commands import Action, Outcome, Pasted, Scrub, Skip
 from veil.clip.history import Forget
 from veil.clip.notify import Message, Urgency
 from veil.engine import residue
@@ -75,6 +74,8 @@ def stderr_lines(outcome: Outcome) -> list[str]:
     history = HISTORY_LINES.get(outcome.history)
     if history:
         lines.append(history)
+    if outcome.pasted is not None:
+        lines.append(PASTE_LINES[outcome.pasted])
     leftover = residue.warning(outcome.residue)
     if leftover:
         lines.append(leftover)
@@ -84,6 +85,30 @@ def stderr_lines(outcome: Outcome) -> list[str]:
             "form(s); restore can't tell them apart from translated ones"
         )
     return lines
+
+
+PASTE_LINES = {
+    Pasted.PASTED: "veil: pasted",
+    Pasted.REFUSED: "veil: not pasted (the desktop refused the permission); press Ctrl+V yourself",
+    Pasted.FAILED: "veil: not pasted (the desktop portal failed); press Ctrl+V yourself",
+}
+# Nothing to sanitize: the copy watcher stays quiet about these (ADR-0031).
+QUIET_SKIPS = frozenset({Skip.EMPTY, Skip.NON_TEXT, Skip.SECRET, Skip.OWN})
+
+
+def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
+    """The copy watcher runs after every copy: it speaks up only when something was replaced,
+    a warning applies, or the clipboard still holds content it couldn't sanitize. Commands you
+    run yourself always notify."""
+    if not auto:
+        return True
+    if outcome.skipped in QUIET_SKIPS:
+        return False
+    if outcome.skipped is not None:
+        return True  # rich text only, a Deny: the user must know
+    return bool(
+        outcome.total or outcome.preexisting_fakes or outcome.asked or outcome.generalized
+    ) or (outcome.history in (Forget.FAILED, Forget.PARTIAL))
 
 
 def notification(outcome: Outcome) -> Message:
@@ -112,7 +137,12 @@ def notification(outcome: Outcome) -> Message:
     sensitive = _sensitive_note(outcome)
     if sensitive:
         body.append(sensitive)
-    body.append("Plain text only. Ready to paste.")
+    body.append(
+        {
+            None: "Plain text only. Ready to paste.",
+            Pasted.PASTED: "Plain text only. Pasted.",
+        }.get(outcome.pasted, "Plain text only. Not pasted: press Ctrl+V yourself.")
+    )
     history = HISTORY_NOTES.get(outcome.history)
     if history:
         body.append(history)
@@ -190,8 +220,6 @@ def _line(outcome: Outcome) -> str:
 
 
 def _skipped(action: Action, skip: Skip) -> Message:
-    if skip is Skip.OFF:
-        return _off(action)
     if action is Action.RESTORE:
         return Message("veil: clipboard NOT restored", f"{_sentence(skip.value)}. Left unchanged.")
     if action is Action.FROM_SELECTION:
@@ -209,19 +237,6 @@ def _skipped(action: Action, skip: Skip) -> Message:
         f"{_sentence(skip.value)}. It still holds the original: don't paste it into a chat.",
         Urgency.CRITICAL,
         icon="dialog-warning",
-    )
-
-
-def _off(action: Action) -> Message:
-    """The kill switch is OFF (spec §4.2 step 1): nothing was touched."""
-    back = killswitch.switch_back()
-    if action is Action.RESTORE:
-        return Message("veil is OFF: nothing restored", f"The clipboard is unchanged.\n{back}")
-    return Message(
-        "veil is OFF: clipboard NOT sanitized",
-        f"It still holds what you copied: don't paste it into a chat.\n{back}",
-        Urgency.CRITICAL,
-        icon="security-low",
     )
 
 

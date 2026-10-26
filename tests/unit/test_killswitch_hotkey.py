@@ -1,34 +1,25 @@
-"""Switching off from the hotkey (M3.2, ADR-0018): a click in a notification, never a pipe.
+"""Switching veil OFF from the hotkey (ADR-0018, ADR-0031): one click in a notification, never a
+pipe. Switching ON needs nothing.
 
-conftest's `switch_chooser` stands in for the notification (default: no answer), and
-`switch_timers` for systemd; the state file lives in the per-test XDG sandbox.
+conftest's `switch_chooser` stands in for the notification (default: no answer), `copy_watcher`
+for the watcher service and `switch_timers` for systemd; state lives in the XDG sandbox.
 """
 
 import fnmatch
 import io
 import sys
 import time
-from datetime import timedelta
 
 import pytest
 
 from tests.unit.test_agent_deny_rules import deny as deny
-from tests.unit.test_killswitch import cmd, state_file
+from tests.unit.test_killswitch import cmd
 from tests.unit.test_killswitch import config as config
 from veil import killswitch, ui
 from veil.clip import notify
 from veil.clip.notify import Message, Urgency
 from veil.exitcodes import ExitCode
-from veil.killswitch import (
-    CONFIRM_SECONDS,
-    HOTKEY_DEFAULT_FOR,
-    ON,
-    Switch,
-    confirm_buttons,
-    confirm_by_notification,
-    read,
-    write,
-)
+from veil.killswitch import CONFIRM_BUTTONS, CONFIRM_SECONDS, confirm_by_notification
 from veil.killswitch import detect_chooser as real_detect_chooser  # bound before conftest
 
 # ── notify.choose: the generic "notification with buttons" ──────────────────
@@ -92,43 +83,25 @@ class Chooser:
 
 class TestConfirm:
     @pytest.mark.parametrize(
-        ("reply", "duration", "expected"),
-        [
-            ("off-default", None, (True, HOTKEY_DEFAULT_FOR)),
-            ("off", None, (True, None)),
-            ("keep", None, (False, None)),
-            (None, None, (False, None)),
-            ("OFF", None, (False, None)),
-            ("off-default", timedelta(hours=2), (False, None)),  # not offered with --for
-            ("off", timedelta(hours=2), (True, timedelta(hours=2))),
-            ("keep", timedelta(hours=2), (False, None)),
-        ],
+        ("reply", "expected"),
+        [("off", True), ("keep", False), (None, False), ("OFF", False), ("", False)],
     )
-    def test_replies(self, reply, duration, expected):
-        assert confirm_by_notification(Chooser(reply), duration) == expected
+    def test_replies(self, reply, expected):
+        assert confirm_by_notification(Chooser(reply)) is expected
 
     def test_no_way_to_ask_keeps_on(self):
-        assert confirm_by_notification(None, None) == (False, None)
+        assert confirm_by_notification(None) is False
 
     def test_question(self):
         chooser = Chooser(None)
-        confirm_by_notification(chooser, None)
+        confirm_by_notification(chooser)
         message, actions, timeout = chooser.asked[0]
         assert message.summary == "Switch veil OFF?"
         assert message.urgency is Urgency.CRITICAL
+        assert "Copies won't be sanitized any more." in message.body
         assert f"No answer in {CONFIRM_SECONDS} s = veil stays ON." in message.body
         assert timeout == CONFIRM_SECONDS
-        assert actions == [
-            ("off-default", "Off for 30 min"),
-            ("off", "Off until `veil on`"),
-            ("keep", "Keep ON"),
-        ]
-
-    def test_buttons_with_duration(self):
-        assert confirm_buttons(timedelta(minutes=90)) == [
-            ("off", "Off for 1 h 30 min"),
-            ("keep", "Keep ON"),
-        ]
+        assert actions == [("off", "Switch OFF"), ("keep", "Keep ON")]
 
     def test_detect(self):
         assert real_detect_chooser(lambda name: None) is None
@@ -138,104 +111,91 @@ class TestConfirm:
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture
+def on(capsys, copy_watcher):
+    assert cmd(capsys, "on")[0] == ExitCode.OK
+    return copy_watcher
+
+
 @pytest.mark.parametrize("command", ["off", "toggle"])
 class TestFromHotkey:
-    def test_click_off(self, capsys, config, switch_chooser, switch_timers, notifications, command):
+    def test_click(self, capsys, on, switch_chooser, notifications, command):
         switch_chooser.reply = "off"
         code, out, _ = cmd(capsys, command, "--from-hotkey")
         assert code == ExitCode.OK
-        assert out.startswith("veil: OFF since ")
-        assert read(config).switch.until is None
-        assert len(switch_timers.scheduled) == 1
-        assert notifications[-1].summary == "veil is OFF"
-
-    def test_click_default(self, capsys, config, switch_chooser, command):
-        switch_chooser.reply = "off-default"
-        cmd(capsys, command, "--from-hotkey")
-        switch = read(config).switch
-        assert switch.until - switch.since == HOTKEY_DEFAULT_FOR
-
-    def test_with_for(self, capsys, config, switch_chooser, command):
-        switch_chooser.reply = "off"
-        cmd(capsys, command, "--from-hotkey", "--for", "2h")
-        switch = read(config).switch
-        assert switch.until - switch.since == timedelta(hours=2)
-        assert [name for name, _ in switch_chooser.asked[0][1]] == ["off", "keep"]
+        assert out == "veil: OFF, copy and paste are normal\n"
+        assert not on.running
+        assert notifications[-1].summary == "veil OFF"
 
     @pytest.mark.parametrize("reply", [None, "keep", "nonsense"])
-    def test_no_click_keeps_on(self, capsys, config, switch_chooser, switch_timers, command, reply):
+    def test_no_click_keeps_on(self, capsys, on, switch_chooser, command, reply):
         switch_chooser.reply = reply
         code, _, err = cmd(capsys, command, "--from-hotkey")
         assert code == ExitCode.ABORTED
-        assert "no Off button clicked); veil stays ON" in err
-        assert read(config).switch == ON
-        assert switch_timers.scheduled == []
+        assert "Switch OFF wasn't clicked); veil stays ON" in err
+        assert on.running
 
-    def test_no_notify_send_keeps_on(self, capsys, config, monkeypatch, command):
+    def test_no_notify_send_keeps_on(self, capsys, on, monkeypatch, command):
         monkeypatch.setattr(killswitch, "detect_chooser", lambda *a, **k: None)
         code, _, err = cmd(capsys, command, "--from-hotkey")
         assert code == ExitCode.ABORTED
         assert "notify-send is missing" in err
-        assert read(config).switch == ON
+        assert on.running
 
-    def test_needs_no_terminal_and_ignores_stdin(self, capsys, config, monkeypatch, command):
+    def test_needs_no_terminal_and_ignores_stdin(self, capsys, on, monkeypatch, command):
         # The hotkey has no terminal. Typing "off" into stdin must not count as a click.
         monkeypatch.setattr(sys, "stdin", io.StringIO("off\n"))
         monkeypatch.setattr(ui, "_isatty", lambda _stream: True)
         code, _, _ = cmd(capsys, command, "--from-hotkey")
         assert code == ExitCode.ABORTED
-        assert read(config).switch == ON
+        assert on.running
         assert sys.stdin.read() == "off\n"  # never read
 
-    def test_since_is_the_click_time(self, capsys, config, switch_chooser, monkeypatch, command):
-        later = killswitch.utc_now() + timedelta(seconds=25)
 
-        def click(message, actions, timeout):
-            monkeypatch.setattr(killswitch, "utc_now", lambda: later)
-            return "off-default"
-
-        monkeypatch.setattr(killswitch, "detect_chooser", lambda *a, **k: click)
-        cmd(capsys, command, "--from-hotkey")
-        switch = read(config).switch
-        assert switch.since == later.replace(microsecond=0)
-        assert switch.until - switch.since == HOTKEY_DEFAULT_FOR
-
-
-def test_toggle_from_hotkey_switches_on_without_asking(capsys, config, switch_chooser):
-    write(config, Switch(True, killswitch.utc_now()))
+def test_toggle_from_hotkey_switches_on_without_asking(capsys, copy_watcher, switch_chooser):
     code, out, _ = cmd(capsys, "toggle", "--from-hotkey")
     assert code == ExitCode.OK
-    assert out == "veil: ON\n"
+    assert out == "veil: ON, every copy is sanitized\n"
+    assert copy_watcher.running
     assert switch_chooser.asked == []
 
 
-def test_without_flag_still_needs_the_terminal(capsys, config, switch_chooser):
+def test_without_flag_still_needs_the_terminal(capsys, on, switch_chooser):
     switch_chooser.reply = "off"  # a click is ignored without --from-hotkey
     assert cmd(capsys, "off")[0] == ExitCode.UNSAFE_ENVIRONMENT
     assert switch_chooser.asked == []
-    assert read(config).switch == ON
+    assert on.running
 
 
 def test_on_has_no_hotkey_flag(capsys):
     with pytest.raises(SystemExit) as caught:
         cmd(capsys, "on", "--from-hotkey")
-    assert caught.value.code == ExitCode.USAGE  # `on` has no such flag: it never asks
+    assert caught.value.code == ExitCode.USAGE  # `on` never asks
 
 
 @pytest.mark.parametrize(
     "command",
     [
         "uv run veil off --from-hotkey",
-        "uv run veil toggle --from-hotkey --for 2h",
+        "uv run veil toggle --from-hotkey",
         "python -m veil off --from-hotkey",
+        "uv run veil on",
         "veil disable",
     ],
 )
-def test_agent_deny_rules_cover_the_hotkey_forms(deny, command):
+def test_agent_deny_rules_cover_the_switch(deny, command):
     patterns = [rule[len("Bash(") : -1] for rule in deny if rule.startswith("Bash(")]
     assert any(fnmatch.fnmatchcase(command, p) for p in patterns), command
 
 
-def test_state_untouched_by_a_failed_hotkey(capsys, config):
-    cmd(capsys, "off", "--from-hotkey")
-    assert not state_file(config).exists()
+# ── buttons fit (owner's screenshot: Plasma cut "Off for 30 m…") ──────────────
+
+
+def test_kill_switch_buttons_fit():
+    assert all(len(label) <= killswitch.MAX_BUTTON_LABEL for _, label in CONFIRM_BUTTONS)
+
+
+def test_ask_before_send_buttons_fit():
+    from veil.clip.ask import ACTIONS
+
+    assert all(len(label) <= killswitch.MAX_BUTTON_LABEL for _, label in ACTIONS)

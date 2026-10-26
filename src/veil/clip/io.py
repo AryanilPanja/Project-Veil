@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 from typing import Protocol
 
-from veil.clip import proc
+from veil.clip import proc, recent
 from veil.errors import ClipboardError
 
 MAX_CLIP_BYTES = 10 * 1024 * 1024
@@ -59,6 +59,7 @@ class ClipContent:
     text: str | None = None  # only for TEXT
     secret: bool = False  # the source marked it as a password (x-kde-passwordManagerHint)
     type_count: int = 0
+    plain_only: bool = False  # TEXT offered only as plain-text types (as veil writes it)
 
     def __repr__(self) -> str:  # never the text
         size = "None" if self.text is None else f"<{len(self.text)} chars>"
@@ -139,7 +140,13 @@ class WaylandClipboard:
             if _says_empty(data.stderr):  # the owner changed in between
                 return ClipContent(Kind.EMPTY)
             raise ClipboardError(f"wl-paste failed (exit {data.returncode})")
-        return ClipContent(Kind.TEXT, _decode(data.stdout), secret=secret, type_count=len(types))
+        return ClipContent(
+            Kind.TEXT,
+            _decode(data.stdout),
+            secret=secret,
+            type_count=len(types),
+            plain_only=plain_only(types),
+        )
 
     def write_text(self, text: str) -> None:
         code = self._feed(
@@ -147,6 +154,7 @@ class WaylandClipboard:
         )
         if code != 0:
             raise ClipboardError(f"wl-copy failed (exit {code})")
+        recent.remember(text)  # the copy watcher must not take this for a new copy
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         code = self._feed([self._copy, *_primary(selection), "--clear"], b"", timeout=self._timeout)
@@ -182,7 +190,7 @@ class XselClipboard:
             raise ClipboardError(f"xsel failed (exit {data.returncode})")
         if not data.stdout:
             return ClipContent(Kind.EMPTY)
-        return ClipContent(Kind.TEXT, _decode(data.stdout), type_count=1)
+        return ClipContent(Kind.TEXT, _decode(data.stdout), type_count=1, plain_only=True)
 
     def write_text(self, text: str) -> None:
         code = self._feed(
@@ -190,6 +198,7 @@ class XselClipboard:
         )
         if code != 0:
             raise ClipboardError(f"xsel failed (exit {code})")
+        recent.remember(text)
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         code = self._feed(
@@ -215,6 +224,12 @@ def detect(
     raise ClipboardError(
         "no clipboard tool found: needs wl-clipboard (Wayland) or xsel (X11) and a display"
     )
+
+
+def plain_only(types) -> bool:
+    """Only plain-text (and descriptive) types: what veil itself writes."""
+    offered = [_norm(t) for t in types if t.strip()]
+    return bool(offered) and all(t in PLAIN_TYPES or _is_meta(t) for t in offered)
 
 
 def _norm(mime: str) -> str:
