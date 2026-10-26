@@ -32,6 +32,7 @@ from veil.killswitch import (
     switch_on,
     write,
 )
+from veil.killswitch import _run as REAL_RUN  # bound before conftest guards it
 
 T0 = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 M30 = timedelta(minutes=30)
@@ -184,11 +185,13 @@ class TestSystemdWatcher:
             "HOME": "/h",
         }
         text = self.watcher(tmp_path, Runs(), env).unit_text()
-        assert "ExecStart=/py -m veil clip watch\n" in text
-        assert "Environment=WAYLAND_DISPLAY=wayland-0\n" in text
-        assert "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/b\n" in text
+        assert 'ExecStart="/py" -m veil clip watch\n' in text
+        assert 'ExecStopPost="/py" -m veil kill-switch-timer stopped\n' in text
+        assert 'Environment="WAYLAND_DISPLAY=wayland-0"\n' in text
+        assert 'Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/b"\n' in text
         assert "HOME" not in text
-        assert "Restart=on-failure\n" in text
+        assert "Restart=always\n" in text
+        assert "KillMode=process\n" in text
         assert "WantedBy=graphical-session.target\n" in text
 
     def test_start(self, tmp_path):
@@ -250,7 +253,7 @@ class TestTimers:
         assert killswitch.NoTimers().schedule(Switch(True, T0, T0 + M30), T0) is False
 
     def test_run_never_raises(self, tmp_path):
-        assert killswitch._run([str(tmp_path / "missing")]) == -1
+        assert REAL_RUN([str(tmp_path / "missing")]) == -1
 
 
 # ── transitions ───────────────────────────────────────────────────────────────
@@ -483,3 +486,91 @@ class TestCli:
 def test_state_file_is_in_the_agent_denied_directory(config):
     assert state_file(config).parent == paths.config_dir()
     assert state_file(config).name == "state"
+
+
+# ── sweep 2026-10-26: a watcher that stops without `veil off` is reported ──────
+
+
+class TestWatcherDown:
+    def test_switch_on_schedules_a_check(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        assert switch_timers.checks == [killswitch.CHECK_AFTER]
+
+    def test_switch_off_writes_off_before_stopping(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        seen_at_stop = []
+        real_stop = copy_watcher.stop
+
+        def stop():
+            seen_at_stop.append(read_switch(config)[0])
+            real_stop()
+
+        copy_watcher.stop = stop
+        switch_off(config, copy_watcher, switch_timers)
+        assert seen_at_stop == [OFF]  # the stop check then knows it was meant
+
+    def test_stopped_while_on_schedules_a_check(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        switch_timers.checks.clear()
+        assert killswitch.on_timer("stopped", config, copy_watcher, switch_timers, T0) is None
+        assert switch_timers.checks == [killswitch.CHECK_AFTER]
+
+    def test_stopped_after_veil_off_is_silent(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        switch_off(config, copy_watcher, switch_timers)
+        switch_timers.checks.clear()
+        killswitch.on_timer("stopped", config, copy_watcher, switch_timers, T0)
+        assert switch_timers.checks == []
+
+    def test_check_warns_when_nothing_is_watching(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        copy_watcher.running = False  # systemctl stop, pkill, a crash loop…
+        message = killswitch.on_timer("check", config, copy_watcher, switch_timers, T0)
+        assert message.summary == "veil isn't running"
+        assert message.urgency is Urgency.CRITICAL
+        assert read_switch(config)[0].on  # never switched OFF by a timer
+
+    def test_check_is_silent_when_running(self, config, copy_watcher, switch_timers):
+        switch_on(config, copy_watcher, switch_timers, T0)
+        assert killswitch.on_timer("check", config, copy_watcher, switch_timers, T0) is None
+
+    def test_check_is_silent_when_off_or_expired(self, config, copy_watcher, switch_timers):
+        assert killswitch.on_timer("check", config, copy_watcher, switch_timers, T0) is None
+        switch_on(config, copy_watcher, switch_timers, T0, M30)
+        copy_watcher.running = False
+        assert killswitch.on_timer("check", config, copy_watcher, switch_timers, T0 + M30) is None
+
+    def test_cli_accepts_the_events(self, capsys, copy_watcher, notifications):
+        cmd(capsys, "on")
+        copy_watcher.running = False
+        assert cmd(capsys, "kill-switch-timer", "check")[0] == ExitCode.OK
+        assert notifications[-1].summary == "veil isn't running"
+
+
+class TestUnitQuoting:
+    def watcher(self, tmp_path, python="/py", env=None):
+        return SystemdWatcher(
+            "/bin/systemctl", tmp_path / "u", python=python, env=env or {}, run=Runs()
+        )
+
+    def test_spaces_and_specifiers_are_quoted(self, tmp_path):
+        text = self.watcher(
+            tmp_path, python="/home/a b/%py$", env={"XDG_CONFIG_HOME": "/c d/%x"}
+        ).unit_text()
+        assert 'ExecStart="/home/a b/%%py$$" -m veil clip watch\n' in text
+        assert 'Environment="XDG_CONFIG_HOME=/c d/%%x"\n' in text
+
+    def test_a_newline_in_a_value_is_left_out(self, tmp_path):
+        text = self.watcher(
+            tmp_path, env={"DISPLAY": ":0\nExecStartPre=/bin/evil", "WAYLAND_DISPLAY": "w"}
+        ).unit_text()
+        assert "evil" not in text
+        assert 'Environment="WAYLAND_DISPLAY=w"\n' in text
+
+    def test_quotes_and_backslashes_are_escaped(self, tmp_path):
+        text = self.watcher(tmp_path, env={"XDG_DATA_HOME": 'a"b\\c'}).unit_text()
+        assert 'Environment="XDG_DATA_HOME=a\\"b\\\\c"\n' in text
+
+    def test_bad_interpreter_path_means_not_started(self, tmp_path):
+        assert self.watcher(tmp_path, python="/py\nx").start() is False
+        assert not (tmp_path / "u" / "veil-watch.service").exists()

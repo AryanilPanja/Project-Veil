@@ -39,7 +39,7 @@ Other platforms are not refused on purpose; they simply have not been built for 
 - A Secret Service keyring (KDE Wallet, GNOME Keyring or KeePassXC) to hold the encryption key,
   **or** passphrase mode (no keyring needed; works over ssh, but cannot be used from hotkeys yet).
 - [uv](https://docs.astral.sh/uv/) (installs Python 3.13 for you).
-- For the v0.1 clipboard hotkeys: a Wayland session, `wl-clipboard` and `notify-send`.
+- For the v0.1 clipboard hotkeys and "veil ON": KDE Plasma 6 on a Wayland session, `wl-clipboard`, `notify-send` (libnotify) and a systemd user session (it runs the copy watcher while veil is ON).
 
 | Platform | Persona, encryption, CLI (`veil translate`) | Clipboard hotkeys (v0.1) | Claude Code proxy (v0.2) |
 |---|---|---|---|

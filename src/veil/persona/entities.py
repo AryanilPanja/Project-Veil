@@ -118,19 +118,19 @@ def _to_entity(record: PairRecord) -> Entity | None:
     pairs = [
         (real, fake)
         for real, fake in zip_longest(record.reals, record.fakes, fillvalue=None)
-        if real is not None and fake is not None and real.strip()
+        if real is not None and fake is not None and canon(real)
     ]
     if not pairs:
         return None
     reals = tuple(real for real, _ in pairs)
     fakes = tuple(fake for _, fake in pairs)
     needs_generation = False
-    if all(not fake.strip() for fake in fakes):
+    if all(not canon(fake) for fake in fakes):
         if policy not in GENERATED:
             return None  # E016: a fake is required (the validator reports it)
         needs_generation = True
         fakes = ()
-    elif any(not fake.strip() for fake in fakes):
+    elif any(not canon(fake) for fake in fakes):
         return None  # partially filled: E016 again; never emit a half-usable entity
     elif all(canon(real) == canon(fake) for real, fake in pairs):
         return None  # identical on both sides: nothing to translate (I002)
@@ -172,7 +172,7 @@ def _sensitive(persona: Persona) -> tuple[SensitiveTerm, ...]:
     section = persona.sensitive
     for category in ("health", "religion", "caste", "political", "sexuality"):
         entry = getattr(section, category)
-        terms = tuple(t for t in entry.real if t.strip())
+        terms = tuple(t for t in entry.real if canon(t))
         if not terms:
             continue
         out.append(

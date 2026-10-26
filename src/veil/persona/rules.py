@@ -5,6 +5,8 @@ Errors:
   E018  year of study / batch year must be complete and shift consistently
   E019  degree phrases: present when enabled, and multi-word (never the bare degree)
   E020  a policy used where it is not allowed
+  E021  a sensitive generalized phrase contains a listed sensitive term (it would be sent)
+  E022  FPE/SHIFT with some fakes filled and some empty (emitted in validate.py)
 Warnings:
   W101  short form without allow_short/contexts (emitted in validate.py)
   W102  a family member's fake does not use the fake surname
@@ -17,6 +19,8 @@ Warnings:
   W109  a sensitive term overlaps a persona value
   W110  full name = first + last on the real side but not on the fake side
   W111  unknown people[].relation
+  W112  a value made only of invisible characters is ignored (emitted in validate.py)
+  W113  a value kept unchanged occurs inside a fake (emitted in validate.py)
 Notes (validate.py): I001 fake will be generated, I002 real == fake (treated as KEEP).
 
 Every message is a fixed template plus field paths (and, for E018, the required year delta).
@@ -196,7 +200,9 @@ def _policy_placement(persona: Persona, records: Sequence[PairRecord]) -> Iterab
             "sensitive.default_policy",
             f"policy {section.default_policy.value} is not allowed (use ASK, GENERALIZE or KEEP)",
         )
-    for category in ("health", "religion", "caste", "political", "sexuality"):
+    categories = ("health", "religion", "caste", "political", "sexuality")
+    all_terms = [t for c in categories for t in getattr(section, c).real if canon(t)]
+    for category in categories:
         entry = getattr(section, category)
         path = child("sensitive", category)
         policy = entry.policy or section.default_policy
@@ -208,11 +214,19 @@ def _policy_placement(persona: Persona, records: Sequence[PairRecord]) -> Iterab
             )
         if (
             policy is Policy.GENERALIZE
-            and any(t.strip() for t in entry.real)
-            and not entry.generalized.strip()
+            and any(canon(t) for t in entry.real)
+            and not canon(entry.generalized)
         ):
             yield _error(
                 "E020", child(path, "generalized"), "GENERALIZE needs a generalized phrase"
+            )
+        if canon(entry.generalized) and any(
+            contains_bounded(term, entry.generalized) for term in all_terms
+        ):
+            yield _error(
+                "E021",
+                child(path, "generalized"),
+                "the generalized phrase contains a listed sensitive term (it would be sent)",
             )
 
 

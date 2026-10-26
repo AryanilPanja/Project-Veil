@@ -410,3 +410,48 @@ def test_rule_messages_never_contain_values(a, b, c, d):
     rendered = render_text(result) + render_json(result)
     for token in (a, b, c, d):
         assert token not in rendered
+
+
+# ── E021: a generalized phrase must not carry a listed term (sweep 2026-10-26) ──
+
+
+@pytest.mark.parametrize(
+    "doc",
+    [
+        "sensitive:\n  health: {real: [diabetes], generalized: diabetes-related condition}\n",
+        "sensitive:\n  health: {real: [diabetes], generalized: Diabetes care}\n",
+        "sensitive:\n  health: {real: [diabetes], generalized: a condition}\n"
+        "  religion: {real: [condition], generalized: a belief}\n",
+    ],
+)
+def test_generalized_phrase_with_a_listed_term_is_an_error(doc):
+    assert any(code == "E021" for code, _ in codes_at(V + doc))
+
+
+def test_generalized_phrase_with_a_longer_word_is_fine():
+    # Bounded matching: "diabetic" is not the listed term "diabetes".
+    doc = V + "sensitive:\n  health: {real: [asthma], generalized: an asthmatic-free phrase}\n"
+    assert not any(code == "E021" for code, _ in codes_at(doc))
+
+
+def test_generalized_phrase_without_terms_is_fine():
+    doc = V + "sensitive:\n  health: {real: [asthma], generalized: a chronic condition}\n"
+    assert not any(code == "E021" for code, _ in codes_at(doc))
+
+
+# ── E022: generated fakes are all-or-nothing ──────────────────────────────────
+
+
+def test_half_filled_generated_group_is_an_error():
+    doc = (
+        V
+        + "education:\n  - institution: {real: XYZ Institute, fake: ABC Institute}\n"
+        + "    domain: {real: foo.edu, fake: bar.edu, policy: FPE}\n"
+        + '    sub_domains: {real: [a.foo.edu, b.foo.edu], fake: [a.bar.edu, ""]}\n'
+    )
+    assert has(doc, "E022", "education[0].domain")
+
+
+def test_empty_generated_fake_is_still_fine():
+    doc = V + 'phones:\n  - {real: "+91 90000 00001", fake: "", policy: FPE}\n'
+    assert not any(code.startswith("E") for code, _ in codes_at(doc))

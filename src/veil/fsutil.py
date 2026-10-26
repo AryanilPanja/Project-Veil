@@ -138,13 +138,25 @@ def atomic_write(
         if backup and path.exists():
             _make_backup(path, what)
         temp.replace(path)
-        fsync_dir(parent)
     except OSError as exc:
         _discard(temp)
         raise _storage_error(exc, what) from exc
     except BaseException:
         _discard(temp)
         raise
+    try:
+        fsync_dir(parent)
+    except OSError as exc:
+        # The new version is already in place; only its durability is in doubt.
+        raise StorageError(
+            f"{what} was written, but flushing it to disk failed (I/O error)"
+        ) from exc
+
+
+def hard_linked(path: Path) -> bool:
+    """A regular file reachable under another name too (overwriting it hits both)."""
+    info = path.lstat()
+    return stat.S_ISREG(info.st_mode) and info.st_nlink > 1
 
 
 def remove_stale_temps(path: Path) -> int:
@@ -161,13 +173,17 @@ def remove_stale_temps(path: Path) -> int:
 def secure_remove(path: Path, what: str = "the file") -> bool:
     """Overwrite a regular file with zeros, then unlink it. Symlinks are unlinked, not followed.
 
+    A file with more than one hard link is only unlinked: overwriting it would destroy the data
+    under its other names too (the store and its `.bak` share an inode; sweep 2026-10-26).
+    Callers that must destroy the content everywhere check `hard_linked` first.
+
     Returns False when there was nothing to remove.
     """
     try:
         info = path.lstat()
     except FileNotFoundError:
         return False
-    if stat.S_ISREG(info.st_mode):
+    if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
         try:
             fd = _open_nofollow(path, os.O_WRONLY, what)
             try:
@@ -252,7 +268,9 @@ def _write_all(fd: int, data: bytes) -> None:
 def _make_backup(path: Path, what: str) -> None:
     """`<name>.bak` = the current file. Hard link (instant, same inode) or a copy as fallback."""
     backup = path.with_name(path.name + BACKUP_SUFFIX)
-    staging = path.with_name(f".{path.name}{BACKUP_SUFFIX}{TEMP_SUFFIX}")
+    # The staging link shares the live file's inode, so its name must never match the
+    # stale-temp pattern (`.<name>.*.tmp`): see secure_remove. Removed on any failure.
+    staging = path.with_name(f".{path.name}{BACKUP_SUFFIX}-staging")
     _discard(staging)
     try:
         os.link(path, staging, follow_symlinks=False)
@@ -260,7 +278,11 @@ def _make_backup(path: Path, what: str) -> None:
         # Filesystems without hard links: copy through atomic_write's own temp machinery.
         atomic_write(backup, read_private(path, max_bytes=1 << 30, what=what), what=what)
         return
-    staging.replace(backup)
+    try:
+        staging.replace(backup)
+    except BaseException:
+        _discard(staging)
+        raise
 
 
 def _discard(path: Path) -> None:

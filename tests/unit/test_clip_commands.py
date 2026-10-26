@@ -16,6 +16,7 @@ from veil.clip import commands, messages
 from veil.clip import io as clipio
 from veil.clip.commands import Action, Outcome, Skip
 from veil.clip.io import Selection
+from veil.clip.io import detect as REAL_DETECT  # bound before conftest guards it
 from veil.engine.matcher import Engine
 from veil.errors import ClipboardError, KeyUnavailable
 from veil.exitcodes import ExitCode
@@ -376,16 +377,19 @@ class TestCli:
         board.fail_write = True
         code, out, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
+        # Cleared, but without the placeholder Klipper may put the original back: reported as
+        # NOT cleared (sweep 2026-10-26).
         assert err == (
-            "veil: clipboard cleared (fail closed); copy the text again and retry\n"
+            "veil: clipboard NOT cleared: do not paste, it may hold unsanitized text\n"
             "veil: wl-copy failed (exit 1)\n"
         )
         assert board.text() is None
         assert_no_reals(out, err)
 
     def test_no_clipboard_tool(self, monkeypatch, capsys):
-        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
-        monkeypatch.delenv("DISPLAY", raising=False)
+        # The real detection (conftest blocks it by default); no display is set, so it finds
+        # no tool and touches nothing.
+        monkeypatch.setattr(clipio, "detect", REAL_DETECT)
         code, _, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
         assert "no clipboard tool found" in err

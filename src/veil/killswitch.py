@@ -39,6 +39,8 @@ FORMAT = 2  # format 1 (before ADR-0031) meant something else: it is ignored
 MIN_FOR = timedelta(minutes=1)
 MAX_FOR = timedelta(hours=24)
 EXPIRE_UNIT = "veil-expire"
+CHECK_UNIT = "veil-check"
+CHECK_AFTER = timedelta(seconds=5)
 LEGACY_UNITS = ("veil-remind",)  # the old OFF reminder (ADR-0018 amendment 1)
 TIMER_COMMAND = "kill-switch-timer"
 WATCH_UNIT = "veil-watch.service"
@@ -207,8 +209,11 @@ class SystemdWatcher:
         self._run = run or _run
 
     def unit_text(self) -> str:
+        """The unit file. Every value is quoted and escaped for systemd (a path with a space or
+        `%` must not split or expand), and values with control characters are left out (a
+        newline would inject a directive)."""
         environment = "".join(
-            f"Environment={name}={self._env[name]}\n"
+            f"Environment={_unit_quote(f'{name}={self._env[name]}')}\n"
             # The user manager may not know the session's display or bus; the watcher needs both.
             for name in (
                 "XDG_CONFIG_HOME",
@@ -217,18 +222,27 @@ class SystemdWatcher:
                 "DISPLAY",
                 "DBUS_SESSION_BUS_ADDRESS",
             )
-            if self._env.get(name)
+            if self._env.get(name) and _printable(self._env[name])
         )
+        python = _unit_quote(self._python, exec_line=True)
         return (
             "[Unit]\n"
             "Description=veil: sanitize every copy (veil ON)\n"
             "PartOf=graphical-session.target\n"
             "After=graphical-session.target\n\n"
             "[Service]\n"
-            f"ExecStart={self._python} -m veil clip watch\n"
+            f"ExecStart={python} -m veil clip watch\n"
+            # However it stops (veil off, systemctl, pkill, a crash loop): check 5 s later and
+            # warn if veil should be ON but nothing is watching (sweep 2026-10-26).
+            f"ExecStopPost={python} -m veil {TIMER_COMMAND} stopped\n"
             f"{environment}"
-            "Restart=on-failure\n"
-            "RestartSec=2\n\n"
+            # Restart after any exit (a killed wl-paste exits "cleanly"); a deliberate
+            # `systemctl stop` still stops it.
+            "Restart=always\n"
+            "RestartSec=2\n"
+            # Only the watcher itself is stopped: wl-copy children serving the sanitized
+            # clipboard keep it alive after OFF.
+            "KillMode=process\n\n"
             "[Install]\n"
             "WantedBy=graphical-session.target\n"
         )
@@ -236,7 +250,11 @@ class SystemdWatcher:
     def start(self) -> bool:
         self._unit_dir.mkdir(parents=True, exist_ok=True)
         unit = self._unit_dir / WATCH_UNIT
-        fsutil.atomic_write(unit, self.unit_text().encode("utf-8"), what="the watcher unit")
+        try:
+            text = self.unit_text()
+        except ValueError:  # a control character in this interpreter's path
+            return False
+        fsutil.atomic_write(unit, text.encode("utf-8"), what="the watcher unit")
         unit.chmod(0o644)
         self._systemctl_run("daemon-reload")
         return self._systemctl_run("enable", "--now", WATCH_UNIT) == 0 and self.active()
@@ -249,6 +267,21 @@ class SystemdWatcher:
 
     def _systemctl_run(self, *args: str) -> int:
         return self._run([self._systemctl, "--user", *args])
+
+
+def _printable(value: str) -> bool:
+    return value.isprintable()
+
+
+def _unit_quote(value: str, *, exec_line: bool = False) -> str:
+    """A systemd-quoted word: backslash and double quote escaped, `%` doubled (specifiers),
+    and on Exec lines `$` doubled (variable expansion)."""
+    if not value.isprintable():
+        raise ValueError("control characters can't go into a unit file")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    if exec_line:
+        escaped = escaped.replace("$", "$$")
+    return f'"{escaped}"'
 
 
 class NoWatcher:
@@ -281,6 +314,8 @@ def detect_watcher(which: Callable[[str], str | None] = shutil.which) -> Watcher
 class Timers(Protocol):
     def schedule(self, switch: Switch, now: datetime) -> bool: ...
 
+    def schedule_check(self, delay: timedelta) -> bool: ...
+
     def cancel(self) -> None: ...
 
 
@@ -311,6 +346,20 @@ class SystemdTimers:
             EXPIRE_UNIT,
             delay,
             [TIMER_COMMAND, "expire"],
+            repeat=False,
+            env=self._env,
+            python=self._python,
+        )
+        return self._run(argv) == 0
+
+    def schedule_check(self, delay: timedelta) -> bool:
+        """`veil kill-switch-timer check` after `delay` (is the watcher still running?)."""
+        self._run([self._systemctl, "--user", "stop", f"{CHECK_UNIT}.timer"])
+        argv = timer_argv(
+            self._systemd_run,
+            CHECK_UNIT,
+            delay,
+            [TIMER_COMMAND, "check"],
             repeat=False,
             env=self._env,
             python=self._python,
@@ -356,6 +405,9 @@ class NoTimers:
     def schedule(self, switch: Switch, now: datetime) -> bool:
         return switch.until is None
 
+    def schedule_check(self, delay: timedelta) -> bool:
+        return False
+
     def cancel(self) -> None:
         return None
 
@@ -397,14 +449,15 @@ def switch_on(
         )
     switch = Switch(True, now, None if duration is None else now + duration)
     write(config, switch)
+    timers.schedule_check(CHECK_AFTER)  # a watcher that dies right after starting is reported
     return switch, timers.schedule(switch, now)
 
 
 def switch_off(config: Path, watcher: Watcher, timers: Timers) -> None:
-    """Stop the watcher first (that is what ends the sanitizing), then record OFF. The caller
-    has confirmed it with a human, or the end time has passed."""
-    watcher.stop()
+    """Record OFF, then stop the watcher. The caller has confirmed it with a human, or the end
+    time has passed. OFF is written first so the watcher's stop check knows it was meant."""
     write(config, OFF)
+    watcher.stop()
     timers.cancel()
 
 
@@ -458,16 +511,38 @@ def off_message(*, expired: bool = False) -> Message:
     )
 
 
+def down_message() -> Message:
+    return Message(
+        "veil isn't running",
+        "veil should be ON, but the copy watcher stopped: copies are NOT sanitized.\n"
+        f"{toggle_hint()} (`journalctl --user -u veil-watch` shows why.)",
+        Urgency.CRITICAL,
+        icon="dialog-warning",
+    )
+
+
 def on_timer(
     event: str, config: Path, watcher: Watcher, timers: Timers, now: datetime
 ) -> Message | None:
-    """What a systemd timer does (`veil kill-switch-timer expire`). Switches OFF only when the
-    ON time the user chose has run out. Old reminder timers (`remind`) just stop themselves."""
+    """What a systemd timer or the watcher unit runs (`veil kill-switch-timer <event>`):
+    - expire: switches OFF, but only when the ON time the user chose has run out;
+    - stopped: the watcher stopped (any reason): check again in a few seconds;
+    - check: veil should be ON but nothing is watching → a critical notification;
+    - remind: an old reminder timer (before ADR-0031) stops itself.
+    Never switches OFF on its own otherwise."""
     switch, _ = read_switch(config)
     if event == "expire" and switch.expired(now):
         switch_off(config, watcher, timers)
         return off_message(expired=True)
-    if event != "expire":
+    if event == "stopped":
+        if switch.on:
+            timers.schedule_check(CHECK_AFTER)
+        return None
+    if event == "check":
+        if switch.on and not switch.expired(now) and not watcher.active():
+            return down_message()
+        return None
+    if event == "remind":
         timers.cancel()
     return None
 

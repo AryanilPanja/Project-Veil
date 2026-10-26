@@ -157,7 +157,7 @@ def _forward(
     skipped = _skip(content.kind, content.secret, source)
     if skipped is not None:
         return Outcome(action, skipped)
-    if auto and recent.seen(content.text or ""):
+    if auto and recent.consume(content.text or ""):
         return Outcome(action, Skip.OWN)
     engine = load()
     text = content.text or ""  # TEXT always carries text
@@ -213,7 +213,9 @@ def fail_closed(board: Clipboard | None) -> Scrub:
         return Scrub.FAILED
     replaced = _attempt(board.write_text, ERROR_PLACEHOLDER)
     if _attempt(board.clear, Selection.CLIPBOARD):
-        return Scrub.CLEARED
+        # Without the placeholder, Klipper's "prevent empty clipboard" may put the original
+        # back: only a clear after a placeholder counts as cleared (sweep 2026-10-26).
+        return Scrub.CLEARED if replaced else Scrub.FAILED
     return Scrub.REPLACED if replaced else Scrub.FAILED
 
 

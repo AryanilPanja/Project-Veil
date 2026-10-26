@@ -67,8 +67,8 @@ class PersonaStore:
         payload = Payload(age.decrypt(ciphertext, identity))
         if payload.canary is None:
             raise DecryptFailed(
-                "the encrypted persona has no valid canary (it was not written by veil, or it "
-                "was altered)"
+                "the encrypted persona has no valid canary (it was not written by `veil persona "
+                "import` or `edit`, or it was damaged)"
             )
         return payload
 

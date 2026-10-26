@@ -223,6 +223,19 @@ class TestRuntimeDir:
         with pytest.raises(UnsafeEnvironment, match="not a real directory"):
             paths.runtime_base(tmpfs_at(link))
 
+    def test_symlinked_parent_onto_disk_is_refused(self, tmp_path, monkeypatch):
+        # <tmpfs>/link/rt where link → a disk folder: lexically under the tmpfs mount, really on
+        # disk. The mount check resolves the path first (sweep 2026-10-26).
+        memory, disk = tmp_path / "memory", tmp_path / "disk"
+        memory.mkdir()
+        (disk / "rt").mkdir(parents=True, mode=0o700)
+        (disk / "rt").chmod(0o700)
+        (memory / "link").symlink_to(disk)
+        runtime = memory / "link" / "rt"
+        monkeypatch.setenv("XDG_RUNTIME_DIR", str(runtime))
+        with pytest.raises(UnsafeEnvironment, match="not in memory"):
+            paths.runtime_base(tmpfs_at(memory))
+
     def test_regular_file_is_refused(self, tmp_path, monkeypatch):
         f = tmp_path / "file"
         f.write_bytes(b"")

@@ -340,6 +340,27 @@ class TestHappyPath:
         assert list((base / "veil").iterdir()) == []
         assert mode(base / "veil") == 0o700
 
+    def test_failed_save_keeps_the_edits_as_a_draft(
+        self, imported, runtime, tty, monkeypatch, capsys
+    ):
+        # The session is wiped before saving; a full disk must not lose the edits (sweep 2026-10-26).
+        from veil.errors import StorageError
+        from veil.persona.draft import DraftStore
+        from veil.persona.store import PersonaStore
+
+        _, read, _ = runtime
+        before = (imported.config / STORE_FILE).read_bytes()
+
+        def full(self, *args, **kwargs):
+            raise StorageError("the disk is full")
+
+        monkeypatch.setattr(PersonaStore, "save", full)
+        with pytest.raises(StorageError):
+            run_edit(imported, read, FakeEditor(replace("fidelity: semantic", "fidelity: loose")))
+        assert (imported.config / STORE_FILE).read_bytes() == before
+        assert DraftStore(imported.config).exists()
+        assert "kept as an encrypted draft" in capsys.readouterr().err
+
     def test_no_changes_saves_nothing(self, imported, runtime, tty, capsys):
         _, read, _ = runtime
         before = (imported.config / STORE_FILE).read_bytes()

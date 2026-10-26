@@ -15,6 +15,8 @@ Loading it needs only `forms.py` and `model.py`: no YAML, no pydantic (that is t
 
 import hashlib
 import json
+import sys
+import unicodedata
 from functools import cache
 from pathlib import Path
 
@@ -33,9 +35,12 @@ _CODE_DIRS = ("engine", "text", "persona")
 
 @cache
 def code_fingerprint() -> str:
-    """Hash of the engine/text/persona sources: a code change invalidates every cache."""
+    """Hash of the engine/text/persona sources, plus the Python and Unicode-database versions
+    (canon/NFKC depend on them): either changing invalidates every cache."""
     root = Path(__file__).resolve().parents[1]
     digest = hashlib.sha256()
+    digest.update(f"py{sys.version_info[0]}.{sys.version_info[1]}".encode())
+    digest.update(f"unicode{unicodedata.unidata_version}".encode())
     for directory in _CODE_DIRS:
         for path in sorted((root / directory).glob("*.py")):
             digest.update(path.name.encode())

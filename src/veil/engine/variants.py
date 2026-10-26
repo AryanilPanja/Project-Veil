@@ -60,7 +60,43 @@ def expand(entity: Entity) -> ExpandedEntity:
     if entity.kind in NAME_KINDS:
         for real, fake in zip(entity.real_forms, entity.fake_forms, strict=False):
             pairs.extend(_name_joins(real, fake))
+            bare = _bare_name(real, fake)
+            if bare is not None:
+                # "Prof. Mary Major" was matched only with that exact title: "Mary Major",
+                # "Dr. Mary Major" and mary.major leaked (sweep 2026-10-26).
+                pairs.append((*bare, "bare"))
+                pairs.extend(_name_joins(*bare))
     return ExpandedEntity(entity, _group(pairs))
+
+
+TITLES = frozenset(
+    t.casefold()
+    for t in (
+        "Prof", "Professor", "Dr", "Doctor", "Mr", "Mrs", "Ms", "Mx", "Miss", "Sir", "Madam",
+        "Shri", "Smt", "Sri", "Kumari", "Er", "Adv",
+    )
+)  # fmt: skip
+
+
+def _bare_name(real: str, fake: str) -> tuple[str, str] | None:
+    """The name without titles and initials on both sides, when that leaves at least two words
+    on each side and differs from what was declared."""
+
+    def strip(name: str) -> list[str]:
+        words = name.split()
+        return [
+            w
+            for w in words
+            if w.rstrip(".").casefold() not in TITLES and not (len(w.rstrip(".")) <= 1)
+        ]
+
+    real_words, fake_words = strip(real), strip(fake)
+    if len(real_words) < 2 or len(fake_words) < 2:
+        return None
+    bare = (" ".join(real_words), " ".join(fake_words))
+    if canon(bare[0]) == canon(real):
+        return None
+    return bare
 
 
 def expand_all(flat: FlatPersona) -> list[ExpandedEntity]:

@@ -400,3 +400,26 @@ TOKEN = st.text(
 def test_error_messages_never_contain_document_text(token, template):
     error = _error(template.format(t=token))
     assert token not in str(error)
+
+
+# ── hostile shapes end in E001, never a crash (sweep 2026-10-26) ──────────────
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "people: !!bool []\n",
+        "people: !!null {}\n",
+        "people: !!bool {a: 1}\n",
+        "people: " + "[" * 20000 + "]" * 20000 + "\n",
+        "a: " + "{a: " * 2000 + "1" + "}" * 2000 + "\n",
+        "a:\n" + "".join("  " * i + "- \n" for i in range(1, 60)),
+    ],
+)
+def test_hostile_shapes_are_format_errors(text):
+    error = _error('version: "1"\n' + text)
+    assert error.code == "E001"
+
+
+def test_reasonable_nesting_is_fine():
+    load_yaml('version: "1"\na: ' + "{a: " * 20 + "x" + "}" * 20 + "\n")
