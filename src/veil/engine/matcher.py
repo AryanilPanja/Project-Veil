@@ -171,6 +171,12 @@ class AuditHit:
     kind: str  # entity kind (name, email, phone…)
 
 
+def _hit(text: str, start: int, path: str, kind: str) -> AuditHit:
+    line = text.count("\n", 0, start) + 1
+    column = start - (text.rfind("\n", 0, start) + 1) + 1
+    return AuditHit(line, column, path, kind)
+
+
 class Engine:
     """forward (real → fake) and reverse (fake → real) over one lexicon."""
 
@@ -223,13 +229,17 @@ class Engine:
 
         Positions and field paths only; the matched text is never part of the result.
         """
-        hits: list[AuditHit] = []
+        hits: list[tuple[int, AuditHit]] = []
         for match in self.forward_matcher.find(text, use_context=False):
-            line = text.count("\n", 0, match.start) + 1
-            column = match.start - (text.rfind("\n", 0, match.start) + 1) + 1
             entity = match.form.entity
-            hits.append(AuditHit(line, column, entity.sources[0], entity.kind.value))
-        return hits
+            hits.append(
+                (match.start, _hit(text, match.start, entity.sources[0], entity.kind.value))
+            )
+        for match in self.sensitive(text):  # listed special-category terms count as findings too
+            entity = match.form.entity
+            kind = f"sensitive {entity.meta_value('category', 'term')}"
+            hits.append((match.start, _hit(text, match.start, entity.sources[0], kind)))
+        return [hit for _, hit in sorted(hits, key=lambda pair: pair[0])]
 
     @cached_property
     def _residue(self) -> Residue:
