@@ -371,42 +371,46 @@ name = "project-veil"
 version = "0.1.0.dev0"
 source = { editable = "." }
 dependencies = [
-    { name = "jeepney" },
+    { name = "jeepney", marker = "sys_platform == 'linux'" },
     { name = "pyahocorasick" },
     { name = "pydantic" },
     { name = "pyrage" },
     { name = "pyyaml" },
-    { name = "secretstorage" },
+    { name = "secretstorage", marker = "sys_platform == 'linux'" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
+    { name = "jeepney" },
     { name = "pytest" },
     { name = "pytest-testmon" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
+    { name = "secretstorage" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "jeepney", specifier = ">=0.8,<1" },
+    { name = "jeepney", marker = "sys_platform == 'linux'", specifier = ">=0.8,<1" },
     { name = "pyahocorasick", specifier = ">=2.1" },
     { name = "pydantic", specifier = ">=2.12,<3" },
     { name = "pyrage", specifier = ">=1.4,<2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
-    { name = "secretstorage", specifier = ">=3.3" },
+    { name = "secretstorage", marker = "sys_platform == 'linux'", specifier = ">=3.3" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "hypothesis", specifier = ">=6.170" },
+    { name = "jeepney", specifier = ">=0.8,<1" },
     { name = "pytest", specifier = ">=8.3" },
     { name = "pytest-testmon", specifier = ">=2.4.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.17" },
+    { name = "secretstorage", specifier = ">=3.3" },
 ]
 
 [[package]]

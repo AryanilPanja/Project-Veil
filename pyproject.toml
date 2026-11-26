@@ -13,8 +13,10 @@ dependencies = [
     "pyyaml>=6.0.2",
     "pyrage>=1.4,<2",
     "pyahocorasick>=2.1",
-    "secretstorage>=3.3",
-    "jeepney>=0.8,<1",
+    # Linux only: Secret Service / KDE Wallet and the D-Bus portals. macOS uses the Keychain
+    # and NSPasteboard through ctypes (no extra packages).
+    "secretstorage>=3.3; sys_platform == 'linux'",
+    "jeepney>=0.8,<1; sys_platform == 'linux'",
 ]
 
 [project.scripts]
@@ -28,6 +30,9 @@ dev = [
     "pytest-testmon>=2.4.1",
     "pytest-xdist>=3.8.0",
     "pytest-timeout>=2.4.0",
+    # The Linux code paths are tested on every platform (fake buses and keyrings).
+    "secretstorage>=3.3",
+    "jeepney>=0.8,<1",
 ]
 
 [build-system]

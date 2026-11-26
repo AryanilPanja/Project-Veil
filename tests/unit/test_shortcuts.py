@@ -5,6 +5,8 @@ kbuildsycoca6 for every test; the jeepney client is tested against a fake servic
 dbus-daemon. Desktop files go to the per-test XDG sandbox.
 """
 
+import sys
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -32,6 +34,12 @@ from veil.shortcuts import kbuildsycoca as real_kbuildsycoca
 
 COMMAND = ["/venv/bin/python", "-m", "veil"]
 META_ALT = 0x10000000 | 0x08000000
+
+
+@pytest.fixture(autouse=True)
+def _linux(monkeypatch):
+    """These tests cover the KDE path; the macOS steps have their own test below."""
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 def rebuild_counter():
@@ -693,3 +701,15 @@ def test_help_names_every_shortcut(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     assert "Meta+Alt+V/C/E/K" in capsys.readouterr().out  # the command list's summary
+
+
+def test_macos_manual_steps_use_shortcuts_app(monkeypatch):
+    from veil import shortcuts
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    lines = shortcuts.manual_steps(command=["/p y/python", "-m", "veil"])
+    body = "\n".join(lines)
+    assert "Run Shell Script" in body
+    assert "Control+Option+V    '/p y/python' -m veil clip sanitize" in body
+    assert "clip paste" not in body
+    assert "from-selection" not in body
