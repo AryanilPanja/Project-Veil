@@ -203,7 +203,10 @@ class TestNothingWritten:
         src = tmp_path / "flow.yaml"
         src.write_text('{version: "1"}\n', encoding="utf-8")
         assert veil("persona", "import", str(src)) == ExitCode.FINDINGS
-        assert "version" in capsys.readouterr().err
+        out, err = capsys.readouterr()
+        assert "E004" in out
+        assert "version" in out
+        assert "nothing was imported" in err
         assert not (veil_home.config / STORE_FILE).exists()
 
     def test_missing_source(self, veil_home, tmp_path, capsys):
