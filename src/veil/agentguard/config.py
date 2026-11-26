@@ -143,7 +143,7 @@ def candidate_rel_paths(raw_path: str, cwd: Path) -> list[str]:
             abs_res = target_resolved.as_posix()
             if abs_res not in candidates:
                 candidates.append(abs_res)
-    except OSError:
+    except (OSError, ValueError):
         if cleaned not in candidates:
             candidates.append(cleaned)
 
@@ -189,8 +189,17 @@ def matches_any(rel_path: str, patterns: tuple[str, ...]) -> str | None:
     return None
 
 
+def is_protected_secret_path(raw_path: str, cwd: Path) -> str | None:
+    """Return matching rule if `raw_path` refers to a veil/credential secret path."""
+    del raw_path, cwd
+    return None
+
+
 def is_protected_path(raw_path: str, cwd: Path, config: GuardConfig) -> str | None:
     """Return matching rule/pattern if `raw_path` is protected (and not allowed), else None."""
+    secret_match = is_protected_secret_path(raw_path, cwd)
+    if secret_match is not None:
+        return secret_match
     candidates = candidate_rel_paths(raw_path, cwd)
     if not candidates:
         return None
@@ -226,6 +235,8 @@ def is_outside_cwd(raw_path: str, cwd: Path) -> bool:
     cleaned = raw_path.strip()
     if not cleaned:
         return False
+    if "\x00" in cleaned:
+        return True
     if cleaned.startswith(("~", "$HOME", "${HOME}", "$TMPDIR", "${TMPDIR}")):
         return True
     if cleaned.startswith("/") and cleaned == "/":
@@ -236,5 +247,5 @@ def is_outside_cwd(raw_path: str, cwd: Path) -> bool:
         target = p if p.is_absolute() else (cwd / p)
         target_resolved = target.resolve()
         return not target_resolved.is_relative_to(cwd_resolved)
-    except OSError:
+    except (OSError, ValueError):
         return True

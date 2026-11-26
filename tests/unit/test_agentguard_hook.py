@@ -119,6 +119,142 @@ def test_hook_pre_allows_normal_source_edit(monkeypatch, tmp_path, capsys):
     assert captured.err == ""
 
 
+def _assert_deny_json(capsys) -> str:
+    captured = capsys.readouterr()
+    out_json = json.loads(captured.out)
+    assert out_json["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert out_json["hookSpecificOutput"]["permissionDecision"] == "deny"
+    reason = out_json["hookSpecificOutput"]["permissionDecisionReason"]
+    assert reason.startswith("veil agent-guard: ")
+    return reason
+
+
+@pytest.mark.parametrize(
+    "raw_stdin",
+    [
+        "",
+        "   \n\t",
+        "{invalid json",
+        "[]",
+        "[1, 2, 3]",
+        '"just a string"',
+        "42",
+        "null",
+        "true",
+    ],
+)
+def test_hook_pre_denies_with_json_on_bad_stdin(monkeypatch, tmp_path, capsys, raw_stdin):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(raw_stdin))
+    code = cli.main(["agent-guard", "hook", "pre"])
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+@pytest.mark.parametrize(
+    "tool_input",
+    [
+        None,
+        "string",
+        123,
+        ["tests/test_app.py"],
+    ],
+)
+def test_hook_pre_denies_non_object_tool_input(monkeypatch, tmp_path, capsys, tool_input):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {"session_id": "sess-bad", "tool_name": "Edit", "cwd": str(tmp_path)}
+    if tool_input is not None:
+        payload["tool_input"] = tool_input
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+def test_hook_pre_denies_nul_byte_in_file_path(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-nul",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(tmp_path / "src" / "app.py\x00")},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+def test_hook_pre_fails_closed_on_unexpected_exception(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def boom(_payload):
+        raise RuntimeError("secret-persona-value-should-not-leak")
+
+    monkeypatch.setattr(hook, "evaluate_pre", boom)
+    payload = {
+        "session_id": "sess-exc",
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "src/app.py"},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    reason = _assert_deny_json(capsys)
+    assert "secret-persona-value-should-not-leak" not in reason
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task", "Agent"],
+)
+def test_hook_pre_allows_readonly_tools_on_repo_and_tests(monkeypatch, tmp_path, capsys, tool_name):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-ro",
+        "tool_name": tool_name,
+        "tool_input": {"file_path": str(tmp_path / "tests" / "test_app.py"), "path": "tests"},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == ExitCode.OK
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    ("field", "target"),
+    [
+        ("file_path", "tests/test_app.py"),
+        ("path", "pyproject.toml"),
+        ("notebook_path", "tests/nb.ipynb"),
+        ("destination", ".github/workflows/ci.yml"),
+        ("target", "uv.lock"),
+    ],
+)
+def test_hook_pre_checks_path_fields_on_unknown_tools(monkeypatch, tmp_path, capsys, field, target):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-unk",
+        "tool_name": "CustomMcpFileTool",
+        "tool_input": {field: target},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+def test_hook_pre_allows_unknown_tool_without_protected_paths(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-unk-ok",
+        "tool_name": "CustomMcpFileTool",
+        "tool_input": {"destination": "src/app.py", "query": "hello"},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == ExitCode.OK
+    assert capsys.readouterr().out == ""
+
+
 @pytest.mark.parametrize(
     "command",
     [
