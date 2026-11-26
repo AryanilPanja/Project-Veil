@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="543" height="238" viewBox="0 0 543 238" role="img" aria-label="veil translate / reverse">
+<rect width="543" height="238" rx="10" fill="#0d1117"/>
+<rect width="543" height="30" rx="10" fill="#161b22"/><rect y="20" width="543" height="10" fill="#161b22"/>
+<circle cx="18" cy="15" r="6" fill="#ff5f57"/><circle cx="38" cy="15" r="6" fill="#febc2e"/><circle cx="58" cy="15" r="6" fill="#28c840"/>
+<text x="271.5" y="19" fill="#8b949e" font-family="-apple-system,Segoe UI,sans-serif" font-size="12" text-anchor="middle">veil translate / reverse</text>
+<g font-family="SFMono-Regular,Menlo,Consolas,monospace" font-size="14" xml:space="preserve">
+<text x="18" y="54"><tspan fill="#3fb950">$ </tspan><tspan fill="#e6edf3">veil translate &lt; note.txt</tspan></text>
+<text x="18" y="74" fill="#c9d1d9">Hi, I&#x27;m Alex Smith (GitHub: alex-smith-dev).</text>
+<text x="18" y="94" fill="#c9d1d9">Reach me at alex.smith@abc.example.test.</text>
+<text x="18" y="114" fill="#c9d1d9">My laptop home is /home/alexs and I grew up in Rivertown.</text>
+<text x="18" y="134" fill="#c9d1d9"></text>
+<text x="18" y="154"><tspan fill="#3fb950">$ </tspan><tspan fill="#e6edf3">veil reverse &lt; answer.txt</tspan></text>
+<text x="18" y="174" fill="#c9d1d9">Hi, I&#x27;m Jane Doe (GitHub: jane-doe-dev).</text>
+<text x="18" y="194" fill="#c9d1d9">Reach me at jane.doe@xyz.example.test.</text>
+<text x="18" y="214" fill="#c9d1d9">My laptop home is /home/janed and I grew up in Springfield.</text>
+</g></svg>

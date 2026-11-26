@@ -17,6 +17,13 @@ veil-macos is a fork of [Project Veil](https://github.com/AryanilPanja/Project-V
 Aryanil Panja. It adds macOS support and `veil agent-guard`, and keeps Linux working from the
 same code.
 
+<p align="center">
+  <img src="docs/assets/translate.svg" alt="veil translate turns Jane Doe's name, GitHub handle, email, home directory and hometown into Alex Smith's; veil reverse restores them" width="640"><br>
+  <img src="docs/assets/audit.svg" alt="veil audit lists where real details are, by line, column and field path, without printing them" width="420">
+</p>
+
+The persona in these screenshots is the synthetic one from the test suite.
+
 ## Quick start
 
 ```bash
