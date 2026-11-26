@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from veil import cli
+from veil.agentguard import install as install_mod
 from veil.exitcodes import ExitCode
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -35,9 +36,9 @@ def test_install_fresh_project_creates_0600_settings_and_hooks(tmp_path, capsys)
     for rule in template["permissions"]["deny"]:
         assert rule in data["permissions"]["deny"]
     assert data["hooks"]["PreToolUse"][0]["matcher"] == ".*"
-    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "veil agent-guard hook pre"
-    assert data["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "veil agent-guard hook post"
-    assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == "veil agent-guard hook stop"
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == install_mod._hook("pre")
+    assert data["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == install_mod._hook("post")
+    assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == install_mod._hook("stop")
 
 
 def test_install_merges_existing_keys_and_unions_arrays(tmp_path, capsys):
@@ -77,7 +78,7 @@ def test_install_merges_existing_keys_and_unions_arrays(tmp_path, capsys):
 
     pre_cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["PreToolUse"]]
     assert "my-custom-hook" in pre_cmds
-    assert "veil agent-guard hook pre" in pre_cmds
+    assert install_mod._hook("pre") in pre_cmds
 
 
 def test_install_warn_replaces_block_hook_without_duplicating(tmp_path, capsys):
@@ -89,7 +90,7 @@ def test_install_warn_replaces_block_hook_without_duplicating(tmp_path, capsys):
 
     data = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
     pre_cmds = [h["hooks"][0]["command"] for h in data["hooks"]["PreToolUse"]]
-    assert pre_cmds == ["veil agent-guard hook pre --warn"]
+    assert pre_cmds == [install_mod._hook("pre --warn")]
 
 
 def test_install_print_outputs_without_writing(tmp_path, capsys):
@@ -97,9 +98,8 @@ def test_install_print_outputs_without_writing(tmp_path, capsys):
     assert code == ExitCode.OK
     out = capsys.readouterr().out
     parsed = json.loads(out)
-    assert (
-        parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        == "veil agent-guard hook pre --warn"
+    assert parsed["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == install_mod._hook(
+        "pre --warn"
     )
     assert not (tmp_path / ".claude").exists()
 
@@ -131,7 +131,7 @@ def test_install_adds_session_start_hook_and_notice_blocks(tmp_path, capsys):
 
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
     session_hooks = settings["hooks"]["SessionStart"]
-    assert session_hooks[0]["hooks"][0]["command"] == "veil agent-guard hook session-start"
+    assert session_hooks[0]["hooks"][0]["command"] == install_mod._hook("session-start")
 
     for name in ("CLAUDE.md", "AGENTS.md"):
         doc = tmp_path / name
@@ -222,3 +222,18 @@ def test_uninstall_on_uninstalled_project_is_noop(tmp_path, capsys):
     assert cli.main(["agent-guard", "uninstall", "--project", str(tmp_path)]) == ExitCode.OK
     capsys.readouterr()
     assert not (tmp_path / ".claude").exists()
+
+
+def test_pre_hook_that_cannot_start_blocks():
+    """A missing interpreter exits 127, which Claude Code would treat as allow."""
+    import subprocess
+
+    command = install_mod._hook("pre", python="/nonexistent/python3")
+    done = subprocess.run(["/bin/sh", "-c", command], input=b"{}", capture_output=True, check=False)
+    assert done.returncode == 2
+
+
+def test_hook_path_with_spaces_is_quoted():
+    assert install_mod._hook("post", python="/opt/my py/python").startswith(
+        "'/opt/my py/python' -m"
+    )

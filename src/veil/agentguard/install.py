@@ -1,7 +1,9 @@
 """`veil agent-guard install`: merge Claude Code guard settings and hooks safely."""
 
 import json
+import shlex
 import stat
+import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -13,7 +15,18 @@ from veil.exitcodes import ExitCode
 
 _TEMPLATE_PATH = Path(__file__).with_name("claude-settings.json")
 _MAX_SETTINGS_BYTES = 1_048_576
-_VEIL_HOOK_PREFIX = "veil agent-guard hook "
+_VEIL_HOOK_PREFIX = "veil agent-guard hook "  # written by older installs; still recognised
+_HOOK_MARK = " -m veil agent-guard hook "
+
+
+def _hook(event: str, python: str | None = None) -> str:
+    """This interpreter by absolute path, so the hook works when `veil` is not on PATH. A hook
+    that can't start exits 127, which Claude Code treats as "allow"; `|| exit 2` turns any
+    such failure of the pre-tool hook into a block."""
+    command = f"{shlex.quote(python or sys.executable)}{_HOOK_MARK}{event}"
+    return f"{command} || exit 2" if event.startswith("pre") else command
+
+
 _NOTICE_BEGIN = "<!-- veil:begin -->"
 _NOTICE_END = "<!-- veil:end -->"
 _NOTICE_FILES = ("CLAUDE.md", "AGENTS.md")
@@ -26,11 +39,11 @@ def load_template() -> dict[str, Any]:
 
 def build_hooks(*, warn: bool = False) -> dict[str, list[dict[str, Any]]]:
     """Build the Claude Code hooks block for SessionStart, PreToolUse, PostToolUse, and Stop."""
-    pre_cmd = f"{_VEIL_HOOK_PREFIX}pre --warn" if warn else f"{_VEIL_HOOK_PREFIX}pre"
+    pre_cmd = _hook("pre --warn" if warn else "pre")
     return {
         "SessionStart": [
             {
-                "hooks": [{"type": "command", "command": f"{_VEIL_HOOK_PREFIX}session-start"}],
+                "hooks": [{"type": "command", "command": _hook("session-start")}],
             }
         ],
         "PreToolUse": [
@@ -42,12 +55,12 @@ def build_hooks(*, warn: bool = False) -> dict[str, list[dict[str, Any]]]:
         "PostToolUse": [
             {
                 "matcher": "",
-                "hooks": [{"type": "command", "command": f"{_VEIL_HOOK_PREFIX}post"}],
+                "hooks": [{"type": "command", "command": _hook("post")}],
             }
         ],
         "Stop": [
             {
-                "hooks": [{"type": "command", "command": f"{_VEIL_HOOK_PREFIX}stop"}],
+                "hooks": [{"type": "command", "command": _hook("stop")}],
             }
         ],
     }
@@ -70,7 +83,7 @@ def _is_veil_hook_entry(entry: object) -> bool:
     return any(
         isinstance(h, dict)
         and isinstance(h.get("command"), str)
-        and h["command"].startswith(_VEIL_HOOK_PREFIX)
+        and (h["command"].startswith(_VEIL_HOOK_PREFIX) or _HOOK_MARK in h["command"])
         for h in inner
     )
 
