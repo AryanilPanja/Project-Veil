@@ -124,10 +124,16 @@ def _shape(text: str, stream: Stream, *, keep_prefix: bool) -> str:
     return "".join(out)
 
 
+_DIGIT = re.compile(r"\d")
+_ORCID_CHARS = frozenset("0123456789Xx")  # the set _orcid keeps; letters like "ORCID:" stay
+
+
 def _digits_into(template: str, digits: str) -> str:
     """Put `digits` into the digit positions of `template` (keeps its separators)."""
+    # Same digit set as the callers' re.sub(r"\D", ...): str.isdigit() is also true for "²"
+    # and "①", which \d does not match, and the iterator would run dry (RuntimeError).
     it = iter(digits)
-    return "".join(next(it) if c.isdigit() else c for c in template)
+    return "".join(next(it) if _DIGIT.fullmatch(c) else c for c in template)
 
 
 # ── phone ─────────────────────────────────────────────────────────────────────
@@ -259,7 +265,7 @@ def _orcid(real: str, stream: Stream) -> str:
     body = digits[:7] + "".join(stream.digit() for _ in range(8))
     full = body + orcid_check_digit(body)
     it = iter(full)
-    return "".join(next(it) if c.isalnum() else c for c in real)
+    return "".join(next(it) if c in _ORCID_CHARS else c for c in real)
 
 
 # ── dates (SHIFT) ─────────────────────────────────────────────────────────────
