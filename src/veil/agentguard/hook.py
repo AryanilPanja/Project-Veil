@@ -33,6 +33,7 @@ from veil.exitcodes import ExitCode
 _MAX_HASH_BYTES = 10_485_760
 _TEST_CMD_TIMEOUT = 600
 _GIT_HEAD_TIMEOUT = 5
+_GIT_BIN = shutil.which("git") or "git"
 _WRAPPER_COMMANDS = frozenset(
     {"env", "nice", "timeout", "nohup", "xargs", "command", "exec", "sudo", "time", "stdbuf"}
 )
@@ -1526,10 +1527,20 @@ def _ensure_session_head(payload: dict[str, Any]) -> None:
 
 
 def _git_head(cwd: Path) -> str | None:
-    git_bin = shutil.which("git") or "git"
     try:
         proc = subprocess.run(  # noqa: S603 - fixed git command
-            [git_bin, "rev-parse", "--verify", "--quiet", "HEAD"],
+            [
+                _GIT_BIN,
+                "-c",
+                "core.fsmonitor=false",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "--no-pager",
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "HEAD",
+            ],
             cwd=cwd,
             capture_output=True,
             text=True,
