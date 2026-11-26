@@ -102,3 +102,36 @@ def test_fill_skips_variant_colliding_with_another_real():
         assert validate_expanded(expand_all(filled)) == []
         build_lexicon(filled)
 
+
+def test_derived_filter_rejects_cross_collision_between_real_and_fake():
+    from tests.unit.test_matcher import FIXTURE, lexicon_from
+    from veil.engine.compose import derived_entities
+    from veil.engine.matcher import Engine
+    from veil.engine.variants import expand_all, validate_expanded
+    from veil.persona.entities import flatten
+    from veil.persona.schema import parse_persona
+    from veil.persona.yamlio import load_yaml
+
+    text = (
+        FIXTURE.read_text(encoding="utf-8")
+        .replace("real: janed", "real: juser")
+        .replace("fake: alexs", "fake: auser")
+        .replace("/home/janed", "/home/juser")
+        .replace("/home/alexs", "/home/auser")
+        .replace(
+            "  - { real: Ravi Kumar, fake: Om Prakash, relation: friend }",
+            "  - { real: Ravi Kumar, fake: Om Prakash, relation: friend }\n"
+            "  - { real: Alan Lexs, fake: Bob Jones, relation: friend }",
+        )
+    )
+    flat = flatten(parse_persona(load_yaml(text)))
+    declared = expand_all(flat)
+    derived = derived_entities(flat, declared)
+    assert validate_expanded([*declared, *derived]) == []
+
+    engine = Engine(lexicon_from(text))
+    assert engine.forward("janed") == "alexs"
+    assert engine.reverse("alexs") == "janed"
+    assert engine.forward("alexs") == "alexs"
+
+
