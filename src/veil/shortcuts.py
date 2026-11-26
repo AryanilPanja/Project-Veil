@@ -18,6 +18,7 @@ the clipboard or the persona.
 
 import contextlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -168,6 +169,28 @@ def desktop_entry(shortcut: Shortcut, command: Sequence[str]) -> str:
         "X-KDE-GlobalAccel-CommandShortcut=true\n"
         f"{KEYS_FIELD}={shortcut.keys}\n"
     )
+
+
+# macOS has no PRIMARY selection and veil can't press keys there yet, so only these three.
+MACOS_SHORTCUTS = ("sanitize", "restore", "toggle")
+
+
+def macos_keys(keys: str) -> str:
+    """KDE's Meta+Alt+X as Control+Option+X: Command+Option+V is Finder's "move here"."""
+    return keys.replace("Meta+Alt+", "Control+Option+")
+
+
+def macos_steps(command: Sequence[str], chosen: Sequence[Shortcut] = SHORTCUTS) -> list[str]:
+    """One Shortcuts.app shortcut per action (no extra software, no accessibility access)."""
+    lines = [
+        'Shortcuts app → New Shortcut → add "Run Shell Script", paste the command, then',
+        "Shortcut Details (ⓘ) → Add Keyboard Shortcut. One shortcut per line:",
+    ]
+    for shortcut in chosen:
+        if shortcut.name in MACOS_SHORTCUTS:
+            line = shlex.join([*command, *shortcut.args])
+            lines.append(f"  {macos_keys(shortcut.keys):<20}{line}")
+    return lines
 
 
 def veil_command() -> list[str]:
@@ -456,6 +479,8 @@ def manual_steps(
 ) -> list[str]:
     """The fallback (spec §4.1): System Settings → Keyboard → Shortcuts → Add New → Command."""
     command = veil_command() if command is None else list(command)
+    if sys.platform == "darwin":
+        return macos_steps(command, chosen)
     lines = ["System Settings → Keyboard → Shortcuts → Add New → Command or Script, then:"]
     for shortcut in chosen:
         lines.append(f"  {shortcut.keys:<12}{exec_value([*command, *shortcut.args])}")
