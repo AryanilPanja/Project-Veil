@@ -40,8 +40,12 @@ jobs:
           exit "$missing"
 
   test:
-    name: lint + tests (Python 3.13)
-    runs-on: ubuntu-latest
+    name: lint + tests (Python 3.13, ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
       # Node 24 majors (Node 20 actions are deprecated). TODO-later: pin to full commit SHAs
@@ -70,7 +74,7 @@ jobs:
         env:
           # Shared runners are slower and noisier than a laptop; the local default is stricter.
           VEIL_PERF_BUDGET_MS: "1500"
-        run: uv run pytest -q
+        run: uv run python -m pytest -q -n auto
 
       - name: Property tests (stress profile)
         env:

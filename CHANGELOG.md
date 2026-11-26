@@ -1,0 +1,52 @@
+# Changelog
+
+Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions: SemVer.
+
+## Unreleased (veil-macos)
+
+Changes in the veil-macos fork of Project Veil by Aryanil Panja.
+
+### Added
+
+- macOS support (`docs/macos.md`):
+  - age key in the login Keychain (Security.framework through ctypes);
+  - clipboard through NSPasteboard, with the nspasteboard.org marker types;
+  - a resident copy watcher run by launchd that polls the pasteboard change counter
+    (0.25 s while you use the machine, 1 s when idle);
+  - notifications, the ask-before-send dialog and the OFF confirmation through `osascript`;
+  - plaintext for `veil persona edit` on a verified `ram://` RAM disk;
+  - debugger attach denied with `ptrace(PT_DENY_ATTACH)`;
+  - Shortcuts.app steps for the hotkeys.
+- `veil agent-guard`: Claude Code hooks that block coding agents from veil's key, persona,
+  clipboard and kill switch, and review their diffs for removed or weakened tests, changed
+  evaluation code and destructive git commands (`docs/agent-guard.md`).
+- Tracked Claude Code settings for the guard (`contrib/agent-guard/claude-settings.json`):
+  deny rules plus the OS sandbox with no unsandboxed escape.
+- `SECURITY.md`, `CONTRIBUTING.md`, `docs/release.md`.
+- An ASCII banner for interactive `veil` and `veil --help`.
+
+### Changed
+
+- License: GPL-3.0-only, with the upstream author's permission. `NOTICE` and
+  `veil --version` carry the attribution required under section 7(b).
+- `secretstorage` and `jeepney` install on Linux only.
+- `veil audit` also reports listed sensitive terms (by position and category).
+
+### Fixed
+
+- `veil translate` sent ASK and GENERALIZE sensitive terms unchanged; it now generalizes them,
+  as the clipboard path already did.
+- NFD Hangul (what macOS produces) was neither translated nor audited.
+- A name hidden with two joiners in a row ("Ja" + ZWJ + ZWJ + "ne") was not matched.
+- A combining mark before an uppercase name ("q" + U+0301 + "JD") hid the case boundary.
+- One ligature in a large text multiplied matcher memory (200 KB of text: 58 MB, now 8.6 MB).
+- The digit and ORCID generators crashed on superscript digits and on a labelled ORCID.
+- Generated and derived forms could collide with other entities' forms, which failed only
+  later, at lexicon build.
+- Academic year context was built from forms that are not translated, so a fake year could
+  leak into restored text, or a real one be reversed.
+- `veil persona check` accepted flow-style YAML that the canary step then rejected after the
+  edit session.
+- Reading a FIFO or `/dev/zero` as input read without a limit.
+- argparse errors echoed the value of `--version=<value>`.
+- Test ids are deterministic, so `pytest -n auto` works.
