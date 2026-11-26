@@ -19,3 +19,17 @@ def test_color_respects_no_color_dumb_terminals_and_pipes():
 
 def test_fits_in_a_narrow_terminal():
     assert max(len(line) for line in banner.render("10.20.30", color=False).splitlines()) <= 60
+
+
+def test_help_shows_banner_only_in_a_terminal(monkeypatch, capsys):
+    from veil import cli, ui
+
+    monkeypatch.setattr(ui, "stdout_is_tty", lambda: False)
+    cli.main([])
+    assert banner.ART[1] not in capsys.readouterr().out
+    monkeypatch.setattr(ui, "stdout_is_tty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")
+    cli.main([])
+    out = capsys.readouterr().out
+    assert banner.ART[1] in out
+    assert "\x1b" not in out

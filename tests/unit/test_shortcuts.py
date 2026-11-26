@@ -713,3 +713,11 @@ def test_macos_manual_steps_use_shortcuts_app(monkeypatch):
     assert "Control+Option+V    '/p y/python' -m veil clip sanitize" in body
     assert "clip paste" not in body
     assert "from-selection" not in body
+
+
+def test_macos_cli_prints_steps_and_succeeds(monkeypatch, capsys):
+    from veil import cli
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert cli.main(["install-shortcuts"]) == 0
+    assert "Shortcuts app" in capsys.readouterr().out
