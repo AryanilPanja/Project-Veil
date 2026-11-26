@@ -66,28 +66,36 @@ def class_term_forms(
 ) -> list[ClassTermForms]:
     out: list[ClassTermForms] = []
     for profile in profiles:
-        degree = _degree_entity(profile)
-        for entity in (degree, _year_entity(profile, degree)):
-            if entity is None:
-                continue
-            pairs = [
-                (r, f)
-                for r, f in zip(entity.real_forms, entity.fake_forms, strict=True)
-                if canon(r) not in taken_real and canon(f) not in taken_fake
-            ]
-            if not pairs:
-                continue
-            for r, f in pairs:
-                taken_real.add(canon(r))
-                taken_fake.add(canon(f))
-            entity = replace(
-                entity,
-                real_forms=tuple(r for r, _ in pairs),
-                fake_forms=tuple(f for _, f in pairs),
-            )
-            reverse_entity = replace(entity, contexts=_reverse_contexts(entity, profile, degree))
-            out.append(ClassTermForms(expand(entity), reverse_entity))
+        degree = _take_free(_degree_entity(profile), taken_real, taken_fake)
+        if degree is not None:
+            out.append(ClassTermForms(expand(degree), degree))
+        year = _take_free(_year_entity(profile, degree), taken_real, taken_fake)
+        if year is not None:
+            reverse_entity = replace(year, contexts=_reverse_contexts(year, profile, degree))
+            out.append(ClassTermForms(expand(year), reverse_entity))
     return out
+
+
+def _take_free(
+    entity: Entity | None, taken_real: set[str], taken_fake: set[str]
+) -> Entity | None:
+    if entity is None:
+        return None
+    pairs = [
+        (r, f)
+        for r, f in zip(entity.real_forms, entity.fake_forms, strict=True)
+        if canon(r) not in taken_real and canon(f) not in taken_fake
+    ]
+    if not pairs:
+        return None
+    for r, f in pairs:
+        taken_real.add(canon(r))
+        taken_fake.add(canon(f))
+    return replace(
+        entity,
+        real_forms=tuple(r for r, _ in pairs),
+        fake_forms=tuple(f for _, f in pairs),
+    )
 
 
 # ── degree ────────────────────────────────────────────────────────────────────
@@ -123,8 +131,17 @@ def _year_entity(profile: AcademicProfile, degree: Entity | None) -> Entity | No
     if not (1 <= n <= len(ROMAN) and 1 <= m <= len(ROMAN)) or n == m:
         return None
     pairs = list(zip(ordinal_phrases(n), ordinal_phrases(m), strict=True))
-    templates = degree.real_forms if degree else ()
-    contexts = (*profile.context_real, *templates) if profile.year_context_required else ()
+    if profile.year_context_required:
+        contexts = tuple(
+            c for c in (*profile.context_real, *(degree.real_forms if degree else ())) if c.strip()
+        )
+        rev_contexts = tuple(
+            c for c in (*profile.context_fake, *(degree.fake_forms if degree else ())) if c.strip()
+        )
+        if not contexts or not rev_contexts:
+            return None
+    else:
+        contexts = ()
     return _entity(f"{profile.path}.year_of_study~ordinals", pairs, contexts, YEAR_WINDOW)
 
 
