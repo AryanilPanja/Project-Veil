@@ -22,7 +22,10 @@ same code.
   <img src="docs/assets/audit.svg" alt="veil audit lists where real details are, by line, column and field path, without printing them" width="420">
 </p>
 
-The persona in these screenshots is the synthetic one from the test suite.
+The persona in these screenshots is the synthetic one from the test suite. `veil` on its own
+shows the help under this banner:
+
+<p align="center"><img src="docs/assets/banner.svg" alt="veil ASCII banner" width="420"></p>
 
 ## Quick start
 
