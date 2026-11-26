@@ -22,7 +22,9 @@ CI = ROOT / ".github" / "workflows" / "ci.yml"
 DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 
-REQUIRED_JOB_NAMES = frozenset({"DCO sign-off", "lint + tests (Python 3.13)"})
+REQUIRED_JOB_NAMES = frozenset(
+    {"DCO sign-off", "lint + tests (Python 3.13)", "lint + tests (Python 3.13, macOS)"}
+)
 EXPECTED_REPOS = frozenset({"actions/checkout", "astral-sh/setup-uv"})
 ERROR_CODES = frozenset({"not-a-uses-line", "bad-ref", "not-full-sha", "bad-version-comment"})
 SHA = re.compile(r"^[0-9a-f]{40}$")
