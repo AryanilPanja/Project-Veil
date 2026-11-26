@@ -1731,6 +1731,11 @@ def evaluate_stop(payload: dict[str, Any]) -> str | None:
 
     full_reason = "veil agent-guard: " + "; ".join(reasons)
     send_notification(full_reason)
+    if payload.get("stop_hook_active") is True:
+        # Claude Code sets this when the agent is stopping again after a block. Blocking a
+        # second time would loop forever on a finding the user asked for (deleting a test on
+        # purpose); the notification and the log keep the flag.
+        return None
     return full_reason
 
 
