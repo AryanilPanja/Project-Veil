@@ -330,3 +330,82 @@ def test_osascript_notifier_formats_counts_and_rules():
     assert calls[0][:2] == ["/usr/bin/osascript", "-e"]
     assert "display notification" in calls[0][2]
     assert 'with title "veil"' in calls[0][2]
+
+
+def test_review_git_invocation_hardened_and_cached(monkeypatch, tmp_path):
+    from veil.agentguard import review
+
+    repo = _make_repo(tmp_path)
+    recorded: list[tuple[list[str], dict]] = []
+    real_run = subprocess.run
+
+    def spy_run(argv, **kwargs):
+        recorded.append((list(argv), dict(kwargs)))
+        return real_run(argv, **kwargs)
+
+    which_calls = 0
+
+    def spy_which(_name):
+        nonlocal which_calls
+        which_calls += 1
+        return "/usr/bin/git"
+
+    monkeypatch.setattr(subprocess, "run", spy_run)
+    monkeypatch.setattr(shutil, "which", spy_which)
+
+    review.review_repo(repo, base="HEAD")
+    assert which_calls == 0  # resolved once at module import, not per _git call
+    assert recorded
+    for argv, kwargs in recorded:
+        assert Path(argv[0]).is_absolute()
+        assert "-c" in argv
+        assert "core.fsmonitor=false" in argv
+        assert "core.hooksPath=/dev/null" in argv
+        assert "--no-pager" in argv
+        assert kwargs.get("timeout") is not None
+    diff_calls = [argv for argv, _ in recorded if "diff" in argv]
+    assert diff_calls
+    for argv in diff_calls:
+        assert "--no-ext-diff" in argv
+        assert "--no-textconv" in argv
+
+
+def test_review_reports_removed_assert_in_space_and_non_ascii_test_file(
+    monkeypatch, tmp_path, capsys
+):
+    repo = _make_repo(tmp_path)
+    unusual = repo / "tests" / "test_café file.py"
+    unusual.write_text(
+        "def test_cafe():\n    assert 1 == 1\n    assert 2 == 2\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "tests/test_café file.py")
+    _git(repo, "commit", "-q", "-m", "add unusual test file")
+
+    unusual.write_text("def test_cafe():\n    assert 1 == 1\n", encoding="utf-8")
+    monkeypatch.chdir(repo)
+    code = cli.main(["agent-guard", "review", "--base", "HEAD", "--json"])
+    assert code == ExitCode.HIGH_FINDINGS
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    assert any(
+        f["rule_id"] == "test-assert-dropped" and f["path"] == "tests/test_café file.py"
+        for f in findings
+    )
+
+
+def test_review_except_regex_no_redos():
+    import time
+
+    from veil.agentguard.review import DiffHunk, DiffLine, FileDiff, scan_diffs
+
+    evil_line = "except" + (" " * 20_000) + "x"
+    diff = FileDiff(
+        old_path="src/app.py",
+        new_path="src/app.py",
+        hunks=(DiffHunk(1, 1, (DiffLine("+", None, 1, evil_line),)),),
+    )
+    t0 = time.perf_counter()
+    findings = scan_diffs([diff])
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 0.5
+    assert not any(f.rule_id == "check-swallowed-exception" for f in findings)

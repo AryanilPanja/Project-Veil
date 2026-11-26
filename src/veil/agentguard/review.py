@@ -18,6 +18,7 @@ from veil.exitcodes import ExitCode
 _MAX_UNTRACKED_BYTES = 1_048_576
 _GIT_TIMEOUT = 30
 _NOTIFY_TIMEOUT = 3.0
+_GIT_BIN = shutil.which("git") or "git"
 
 
 class Severity(StrEnum):
@@ -146,9 +147,16 @@ def _is_ml_eval_file(path: str) -> bool:
 
 
 def _git(repo: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    git_bin = shutil.which("git") or "git"
     return subprocess.run(  # noqa: S603 - fixed git executable with controlled flags
-        [git_bin, *args],
+        [
+            _GIT_BIN,
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "--no-pager",
+            *args,
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -199,6 +207,54 @@ def resolve_base_ref(repo: Path, base: str | None = None) -> str | None:
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+_C_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "f": 0x0C,
+    "n": 0x0A,
+    "r": 0x0D,
+    "t": 0x09,
+    "v": 0x0B,
+    "\\": ord("\\"),
+    '"': ord('"'),
+}
+
+
+def _unquote_git_path(raw: str) -> str:
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        buf = bytearray()
+        i = 1
+        end = len(raw) - 1
+        while i < end:
+            ch = raw[i]
+            if ch == "\\" and i + 1 < end:
+                nxt = raw[i + 1]
+                if nxt in _C_ESCAPES:
+                    buf.append(_C_ESCAPES[nxt])
+                    i += 2
+                    continue
+                if i + 3 < end and all(c in "01234567" for c in raw[i + 1 : i + 4]):
+                    buf.append(int(raw[i + 1 : i + 4], 8))
+                    i += 4
+                    continue
+            buf.extend(ch.encode("utf-8"))
+            i += 1
+        return buf.decode("utf-8", errors="replace")
+    return raw
+
+
+def _read_git_header_token(text: str, pos: int) -> tuple[str, int] | None:
+    if pos >= len(text) or text[pos] != '"':
+        return None
+    i = pos + 1
+    while i < len(text):
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == '"':
+            return _unquote_git_path(text[pos : i + 1]), i + 1
+        i += 1
+    return None
 
 
 def parse_unified_diff(diff_text: str) -> list[FileDiff]:
@@ -262,14 +318,14 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
             continue
         if line.startswith("rename from "):
             is_renamed = True
-            cur_old = line[len("rename from ") :]
+            cur_old = _unquote_git_path(line[len("rename from ") :].rstrip("\r\n"))
             continue
         if line.startswith("rename to "):
             is_renamed = True
-            cur_new = line[len("rename to ") :]
+            cur_new = _unquote_git_path(line[len("rename to ") :].rstrip("\r\n"))
             continue
         if line.startswith("--- "):
-            raw = line[4:].strip()
+            raw = _unquote_git_path(line[4:].rstrip("\r\n").rstrip("\t"))
             if raw == "/dev/null":
                 is_new = True
                 cur_old = None
@@ -277,7 +333,7 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
                 cur_old = raw[2:]
             continue
         if line.startswith("+++ "):
-            raw = line[4:].strip()
+            raw = _unquote_git_path(line[4:].rstrip("\r\n").rstrip("\t"))
             if raw == "/dev/null":
                 is_deleted = True
                 cur_new = None
@@ -314,19 +370,45 @@ def parse_unified_diff(diff_text: str) -> list[FileDiff]:
 
 def _parse_diff_git_paths(header: str) -> tuple[str, str] | None:
     rest = header[len("diff --git ") :]
+    if rest.startswith('"'):
+        tok1 = _read_git_header_token(rest, 0)
+        if tok1 is None:
+            return None
+        first, pos = tok1
+        if pos >= len(rest) or rest[pos] != " ":
+            return None
+        second_raw = rest[pos + 1 :]
+        if second_raw.startswith('"'):
+            tok2 = _read_git_header_token(second_raw, 0)
+            if tok2 is None:
+                return None
+            second = tok2[0]
+        else:
+            second = second_raw
+        if first.startswith("a/") and second.startswith("b/"):
+            return first[2:], second[2:]
+        return None
+    if not rest.startswith("a/"):
+        return None
+    quoted_b_idx = rest.find(' "b/')
+    if quoted_b_idx != -1:
+        tok2 = _read_git_header_token(rest, quoted_b_idx + 1)
+        if tok2 is not None and tok2[0].startswith("b/"):
+            return rest[2:quoted_b_idx], tok2[0][2:]
     marker = " b/"
     idx = rest.find(marker)
-    if rest.startswith("a/") and idx != -1:
+    if idx != -1:
         return rest[2:idx], rest[idx + len(marker) :]
     return None
 
 
 def collect_diffs(repo: Path, base_ref: str | None) -> list[FileDiff]:
     """Collect diffs from `base_ref` to working tree, plus untracked non-ignored files."""
+    common = ["--no-ext-diff", "--no-textconv", "-M", "--no-color", "--unified=3"]
     if base_ref is not None:
-        proc = _git(repo, ["diff", "-M", "--no-color", "--unified=3", base_ref])
+        proc = _git(repo, ["diff", *common, base_ref])
     else:
-        proc = _git(repo, ["diff", "-M", "--no-color", "--unified=3", "--cached"])
+        proc = _git(repo, ["diff", *common, "--cached"])
     if proc.returncode != 0:
         raise VeilError("git diff failed", exit_code=ExitCode.USAGE)
     diffs = parse_unified_diff(proc.stdout)
@@ -386,7 +468,7 @@ _TOL_STR_RE = re.compile(
     r"\b(default_budget_ms|budget|timeout)\s*[:=]\s*['\"]([0-9]+(?:\.[0-9]+)?)['\"]",
     re.IGNORECASE,
 )
-_SWALLOW_ONE_LINE_RE = re.compile(r"^\s*except(?:\s+[^:]+)?\s*:\s*(?:pass|\.\.\.)\s*(?:#.*)?$")
+_SWALLOW_ONE_LINE_RE = re.compile(r"^\s*except\b[^:]*:\s*(?:pass|\.\.\.)\s*(?:#.*)?$")
 _BARE_EXCEPT_RE = re.compile(r"^\s*except\s*:\s*(?:#.*)?$")
 _EXCEPT_HEADER_RE = re.compile(r"^\s*except\b[^:]*:\s*(?:#.*)?$")
 _PASS_LINE_RE = re.compile(r"^\s*(?:pass|\.\.\.)\s*(?:#.*)?$")
