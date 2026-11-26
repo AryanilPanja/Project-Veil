@@ -67,4 +67,7 @@ testpaths = ["tests"]
 addopts = "-ra --strict-markers --strict-config"
 xfail_strict = true
 filterwarnings = ["error"]
-markers = ["slow_scrypt: uses real age scrypt (about 1.5 s per call)"]
+markers = [
+    "slow_scrypt: uses real age scrypt (about 1.5 s per call)",
+    "real_ramdisk: creates the real macOS RAM disk (opt-in, VEIL_TEST_RAMDISK=1)",
+]

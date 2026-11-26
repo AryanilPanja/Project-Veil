@@ -91,6 +91,19 @@ def _no_real_keyring(monkeypatch):
     monkeypatch.setattr(keystore, "secret_service_backend", forbidden)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_ramdisk(request, monkeypatch):
+    """No test may create or eject the owner's real macOS RAM disk (unless it opts in)."""
+    if request.node.get_closest_marker("real_ramdisk"):
+        return
+    from veil import ramdisk
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("a test tried to use the real macOS RAM disk")
+
+    monkeypatch.setattr(ramdisk, "_run", forbidden)
+
+
 class RecordingNotifier:
     """Stands in for notify-send: records each Message instead of showing it."""
 

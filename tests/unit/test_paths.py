@@ -256,6 +256,7 @@ class TestRuntimeDir:
 
     @pytest.mark.parametrize("value", ["", "  ", "relative/run"])
     def test_unset_or_relative_variable_falls_back_to_run_user(self, monkeypatch, value):
+        monkeypatch.setattr(paths.sys, "platform", "linux")  # darwin uses the RAM disk
         monkeypatch.setenv("XDG_RUNTIME_DIR", value)
         seen: list[Path] = []
 
