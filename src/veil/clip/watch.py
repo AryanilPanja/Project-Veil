@@ -10,7 +10,8 @@ news is notified (commands.py, messages.py).
 wl-paste hands the new content to the command on stdin; veil reads the clipboard itself (to see
 every offered type), so `drain_stdin` just empties that pipe.
 
-Wayland only: on X11 there is no equivalent here; the explicit hotkeys still work.
+Wayland only: on X11 there is no equivalent here; the explicit hotkeys still work. On macOS
+`veil clip watch` runs the resident poller in macwatch.py instead (a launchd agent).
 """
 
 import io
@@ -38,6 +39,9 @@ def run(
 ) -> None:
     """Replace this process with the watcher (systemd then supervises wl-paste itself)."""
     env = dict(os.environ) if env is None else env
+    if sys.platform == "darwin":
+        run_macos()
+        return
     wl_paste = which("wl-paste")
     if not env.get("WAYLAND_DISPLAY") or wl_paste is None:
         raise ClipboardError("the copy watcher needs a Wayland session and wl-clipboard")
@@ -72,3 +76,32 @@ def drain_stdin(stream=None, limit: int = DRAIN_LIMIT, deadline: float = DRAIN_S
             total += len(chunk)
     except (OSError, ValueError, AttributeError):  # no usable stdin: nothing to drain
         return
+
+
+def run_macos(main: Callable[[list[str]], int] | None = None) -> None:
+    """The resident macOS watcher (macwatch.py). Each copy runs the same code path as
+    `veil clip sanitize --auto`, in this process; its errors are already reported and failed
+    closed by that path, so the loop keeps going."""
+    from veil import killswitch, paths
+    from veil.clip import macwatch, pasteboard
+
+    if main is None:
+        from veil.cli import main
+
+    def on_copy() -> None:
+        try:
+            main(["clip", "sanitize", "--auto"])
+        except (Exception, SystemExit):  # noqa: BLE001 - one bad copy must not end the watcher
+            return
+
+    def on_clock() -> bool:
+        config = paths.config_dir()
+        switch, _ = killswitch.read_switch(config)
+        if not switch.on:
+            return False
+        if switch.expired(killswitch.utc_now()):
+            main(["kill-switch-timer", "expire"])  # switches OFF and unloads this agent
+            return False
+        return True
+
+    macwatch.run(pasteboard.change_count, on_copy, on_clock)

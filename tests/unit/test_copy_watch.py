@@ -7,6 +7,7 @@ conftest keeps the recent-writes list, the watcher service and notifications in 
 
 import io
 import json
+import sys
 from datetime import timedelta
 
 import pytest
@@ -28,6 +29,12 @@ SENSITIVE = "Jane Doe has asthma.\n"
 
 
 # ── the recent-writes guard ───────────────────────────────────────────────────
+
+
+@pytest.fixture
+def linux(monkeypatch):
+    """The Linux code path, also when the tests run on macOS."""
+    monkeypatch.setattr(sys, "platform", "linux")
 
 
 class TestRecent:
@@ -118,7 +125,7 @@ class TestWatch:
             "/usr/bin/wl-paste", "--watch", "/py", "-m", "veil", "clip", "sanitize", "--auto",
         ]  # fmt: skip
 
-    def test_run_execs_wl_paste(self):
+    def test_run_execs_wl_paste(self, linux):
         calls = []
         watch.run(
             which=lambda name: f"/usr/bin/{name}",
@@ -135,7 +142,7 @@ class TestWatch:
             (lambda name: f"/usr/bin/{name}", {}),
         ],
     )
-    def test_needs_wayland_and_wl_paste(self, which, env):
+    def test_needs_wayland_and_wl_paste(self, linux, which, env):
         with pytest.raises(ClipboardError):
             watch.run(which=which, env=env, execv=lambda *a: None)
 

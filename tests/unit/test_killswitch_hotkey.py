@@ -28,6 +28,12 @@ BUTTONS = [("a", "Apple"), ("b", "Banana")]
 MESSAGE = Message("Pick?", "one of two", Urgency.CRITICAL, icon="dialog-question")
 
 
+@pytest.fixture
+def linux(monkeypatch):
+    """The Linux code path, also when the tests run on macOS."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 def fake_notify_send(tmp_path, body: str):
     script = tmp_path / "fake-notify-send"
     script.write_text(f"#!{sys.executable}\n{body}\n")
@@ -103,7 +109,7 @@ class TestConfirm:
         assert timeout == CONFIRM_SECONDS
         assert actions == [("off", "Switch OFF"), ("keep", "Keep ON")]
 
-    def test_detect(self):
+    def test_detect(self, linux):
         assert real_detect_chooser(lambda name: None) is None
         assert callable(real_detect_chooser(lambda name: "/usr/bin/" + name))
 

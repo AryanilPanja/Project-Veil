@@ -4,6 +4,8 @@ Snapshots are written out in full on purpose: any wording change shows up in rev
 notification is ever shown (conftest's `notifications` fixture records them instead).
 """
 
+import sys
+
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
@@ -166,6 +168,12 @@ SNAPSHOTS = [
 ]
 
 
+@pytest.fixture
+def linux(monkeypatch):
+    """The Linux code path, also when the tests run on macOS."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 @pytest.mark.parametrize(("outcome", "lines", "message"), SNAPSHOTS)
 def test_snapshot(outcome, lines, message):
     assert messages.stderr_lines(outcome) == lines
@@ -323,7 +331,7 @@ class TestNotifySend:
     def test_missing_binary_is_reported_not_raised(self, tmp_path):
         assert NotifySend(str(tmp_path / "nope")).notify(Message("s", "b")) is False
 
-    def test_detect(self):
+    def test_detect(self, linux):
         assert isinstance(real_detect(lambda name: "/usr/bin/" + name), NotifySend)
         assert isinstance(real_detect(lambda name: None), NullNotifier)
         assert NullNotifier().notify(Message("s", "b")) is False
