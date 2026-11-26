@@ -78,3 +78,27 @@ def test_parser_hides_value_in_ignored_explicit_argument(capsys):
     with pytest.raises(SystemExit):
         cli.build_parser().parse_args(["--version=JANEDOE"])
     assert "JANEDOE" not in capsys.readouterr().err
+
+
+def test_fill_skips_variant_colliding_with_another_real():
+    from tests.unit.test_matcher import FIXTURE
+    from veil.engine.fill import fill_generated
+    from veil.engine.lexicon import build_lexicon
+    from veil.engine.variants import expand_all, validate_expanded
+    from veil.engine.vault import Vault
+    from veil.persona.check import check_bytes
+    from veil.persona.entities import flatten
+    from veil.persona.schema import parse_persona
+    from veil.persona.yamlio import load_yaml
+
+    base = FIXTURE.read_text(encoding="utf-8")
+    target = '  - { real: "+91 90000 00001", fake: "", policy: FPE }'
+    second = '  - { real: "9000000001", fake: "", policy: FPE }'
+    for pair in (f"{target}\n{second}", f"{second}\n{target}"):
+        text = base.replace(target, pair)
+        assert check_bytes(text.encode("utf-8")).errors == ()
+        flat = flatten(parse_persona(load_yaml(text)))
+        filled = fill_generated(flat, Vault(seed=b"s" * 32))
+        assert validate_expanded(expand_all(filled)) == []
+        build_lexicon(filled)
+
