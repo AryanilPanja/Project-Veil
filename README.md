@@ -79,8 +79,8 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 CI runs the same checks on every push and pull request (`.github/workflows/ci.yml`).
-To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) first: contributions need a signed
-[contributor agreement](CONTRIBUTOR-AGREEMENT.md) and go through pull requests into `main`.
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) first: signed-off commits (DCO), pull
+requests into `main`.
 
 ## Privacy rules for contributors
 - Never commit real personal data: not in code, tests, fixtures, logs or commit messages. Tests
@@ -94,4 +94,4 @@ To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) first: contributions need
 - Me (Dumb Human)
 
 ## License
-Proprietary: all rights reserved. The source is publicly visible, but no permission is granted to use, copy, modify, or distribute it, except to contributors who have signed the [contributor agreement](CONTRIBUTOR-AGREEMENT.md), for their contributions only. See [LICENSE](LICENSE).
+GNU General Public License v3.0 ([LICENSE](LICENSE)), with one additional term under its section 7(b): keep the attribution "Based on Project Veil by Aryanil Panja" and the copyright notices ([NOTICE](NOTICE)).

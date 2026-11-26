@@ -14,6 +14,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Every commit is signed off (git commit -s)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # Only hashes are printed: commit messages are contributor-controlled text.
+        run: |
+          missing=0
+          for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            if ! git log -1 --format=%B "$commit" | grep -qE '^Signed-off-by: .+ <[^>]+>$'; then
+              echo "::error::commit ${commit:0:12} has no Signed-off-by line (git commit -s; see CONTRIBUTING.md)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
   test:
     name: lint + tests (Python 3.13)
     runs-on: ubuntu-latest

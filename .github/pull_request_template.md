@@ -8,7 +8,7 @@
 
 ## Checklist
 
-- [ ] I have signed the Project Veil Contributor Agreement (version 1) and sent it to the owner
+- [ ] Every commit is signed off (`git commit -s`): I certify the DCO and license this under GPL-3.0 with the NOTICE attribution term
 - [ ] No real personal data anywhere in this pull request (code, tests, docs, commit messages); tests use the synthetic persona
 - [ ] `uv run pytest -q` passes locally
 - [ ] `uv run ruff check . && uv run ruff format --check .` passes

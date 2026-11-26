@@ -1,24 +1,31 @@
 # Contributing to Project Veil
 
-Thanks for helping. Project Veil is proprietary (see [LICENSE](LICENSE)), so please read
-step 1 before writing any code.
+Thanks for helping. Project Veil is licensed under the **GNU GPL version 3** with an
+attribution term (see [LICENSE](LICENSE) and [NOTICE](NOTICE)).
 
-## 1. Sign the contributor agreement first
+## 1. Sign off your commits (DCO)
 
-Read [`CONTRIBUTOR-AGREEMENT.md`](CONTRIBUTOR-AGREEMENT.md), fill in the signing block, and send
-the signed copy to the owner **privately** (not in an issue or a pull request: it has personal
-details). It lets you work on the code for contributions, and lets the owner use what you submit.
-The owner counter-signs and confirms before your first pull request is reviewed.
+By contributing, you agree that your contribution is licensed under the same terms (GPL-3.0 with
+the NOTICE attribution term), and you certify the
+[Developer Certificate of Origin 1.1](https://developercertificate.org/): you wrote it, or have
+the right to submit it under this license. Show that by signing off **every commit**:
+
+```bash
+git commit -s -m "..."     # adds: Signed-off-by: Your Name <your-noreply-email>
+```
+
+CI checks every commit in a pull request for that line. Forgot one? `git rebase --signoff main`,
+then force-push your branch.
 
 ## 2. Fork, branch, pull request
 
 1. Fork `AryanilPanja/Project-Veil` on GitHub and clone your fork.
 2. Create a branch per task, named `<area>/<short-task>` (e.g. `macos/t1-ci`).
-3. Commit with your **GitHub noreply address** as the author email
+3. Commit (signed off) with your **GitHub noreply address** as the author email
    (`git config user.email <id>+<user>@users.noreply.github.com`).
 4. Open a pull request **into `main`** of `AryanilPanja/Project-Veil`. Keep each one to a single
    task; small pull requests get reviewed faster.
-5. CI (lint + tests) must pass, and the owner must approve. On your first pull request, CI waits
+5. CI (lint, tests, sign-off) must pass, and the owner must approve. On your first pull request, CI waits
    until the owner allows it to run. The owner merges; please don't push to `main` (it's protected).
 
 ## 3. Setup and checks
