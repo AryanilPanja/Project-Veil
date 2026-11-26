@@ -8,6 +8,9 @@ A form occurring in a text is *bounded* on a side when any of these holds:
      modifier letters take their base letter's script;
   5. there is a lower→Upper case transition across the edge (`janeResume`, `myJane`).
 
+On the left side, combining marks are looked through to their base letter, which supplies the
+class, script and case for rules 3 to 5.
+
 Combining marks (Unicode M*) count as letters, so Indic vowel signs never split a word.
 Digit next to digit is never a boundary: `2021` does not occur bounded inside `20217`.
 """
@@ -52,11 +55,27 @@ def is_bounded(text: str, start: int, end: int) -> bool:
     """Is text[start:end] bounded on both sides? Indices are into `text` (NFKC, original case)."""
     if not 0 <= start < end <= len(text):
         return False
-    left = text[start - 1] if start > 0 else None
+    left = _base_before(text, start) if start > 0 else None
     right = text[end] if end < len(text) else None
     return _side_ok(edge=text[start], neighbour=left, neighbour_is_left=True) and _side_ok(
         edge=text[end - 1], neighbour=right, neighbour_is_left=False
     )
+
+
+_MARK_SCAN_LIMIT = 32  # longest run of marks looked through; real text has two or three
+
+
+def _base_before(text: str, start: int) -> str:
+    """The character before `start`, or the base letter its combining marks belong to.
+
+    Case and script are properties of the base: in "q + U+0301 + JD" the left side of "JD" is
+    a lowercase q, so the lower→Upper rule applies as it does for "qJD" (sweep 2026-11).
+    """
+    i = start - 1
+    floor = max(0, start - 1 - _MARK_SCAN_LIMIT)
+    while i > floor and unicodedata.category(text[i])[0] == "M":
+        i -= 1
+    return text[i] if unicodedata.category(text[i])[0] != "M" else text[start - 1]
 
 
 def _side_ok(*, edge: str, neighbour: str | None, neighbour_is_left: bool) -> bool:
