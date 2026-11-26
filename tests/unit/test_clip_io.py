@@ -429,6 +429,11 @@ def which_from(*present: str):
 
 
 class TestDetect:
+    @pytest.fixture(autouse=True)
+    def _linux(self, monkeypatch):
+        # These cases cover the Linux tools; darwin always picks the pasteboard.
+        monkeypatch.setattr(clipio.sys, "platform", "linux")
+
     def test_wayland(self):
         board = detect(
             {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"},
