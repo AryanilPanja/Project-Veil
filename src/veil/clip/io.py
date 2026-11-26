@@ -11,12 +11,14 @@ Writing offers exactly one type, `text/plain` (wl-copy may add its plain-text al
 UTF8_STRING), so a site can't paste a rich, unsanitized version. Writing a clipboard replaces
 every type the previous owner offered.
 
-Backends: wl-clipboard on Wayland; xsel on X11 (basic fallback: xsel can't list types, so it
-only ever sees TEXT or EMPTY). `detect()` picks one from the environment.
+Backends: the NSPasteboard (clip/pasteboard.py) on macOS; wl-clipboard on Wayland; xsel on X11
+(basic fallback: xsel can't list types, so it only ever sees TEXT or EMPTY). `detect()` picks one
+from the platform and environment.
 """
 
 import os
 import shutil
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, StrEnum
@@ -211,7 +213,12 @@ class XselClipboard:
 def detect(
     env: Mapping[str, str] | None = None, which: Callable[[str], str | None] = shutil.which
 ) -> Clipboard:
-    """wl-clipboard when a Wayland display is set, else xsel when an X display is set."""
+    """The pasteboard on macOS; else wl-clipboard when a Wayland display is set, else xsel when
+    an X display is set."""
+    if sys.platform == "darwin":
+        from veil.clip.pasteboard import PasteboardClipboard  # lazy: ctypes onto AppKit
+
+        return PasteboardClipboard()
     env = os.environ if env is None else env
     if env.get("WAYLAND_DISPLAY"):
         wl_paste, wl_copy = which("wl-paste"), which("wl-copy")
@@ -222,7 +229,8 @@ def detect(
         if xsel:
             return XselClipboard(xsel)
     raise ClipboardError(
-        "no clipboard tool found: needs wl-clipboard (Wayland) or xsel (X11) and a display"
+        "no clipboard tool found: needs the macOS pasteboard, or wl-clipboard (Wayland) "
+        "or xsel (X11) and a display"
     )
 
 
