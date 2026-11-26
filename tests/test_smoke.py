@@ -25,7 +25,10 @@ def test_version_flag(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
-    assert capsys.readouterr().out.strip() == f"veil {veil.__version__}"
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"veil {veil.__version__}"
+    assert "Based on Project Veil by Aryanil Panja" in lines[1]  # GPL-3.0 s7(b), NOTICE
+    assert "GPL-3.0-only" in lines[2]
 
 
 def test_no_args_prints_help(capsys):
@@ -63,7 +66,8 @@ def test_python_dash_m_entry_point():
         timeout=60,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == f"veil {veil.__version__}"
+    assert result.stdout.splitlines()[0] == f"veil {veil.__version__}"
+    assert "Aryanil Panja" in result.stdout
     assert result.stderr == ""
 
 

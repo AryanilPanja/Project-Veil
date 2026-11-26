@@ -27,6 +27,7 @@ class _VersionAction(argparse.Action):
 
     def __call__(self, parser, namespace, values, option_string=None):
         ui.out(f"veil {veil.__version__}")
+        ui.out(veil.ATTRIBUTION)
         parser.exit()
 
 
