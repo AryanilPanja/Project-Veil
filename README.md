@@ -47,10 +47,10 @@ veil audit < draft.txt                          # where real details are, by fie
 ## How it works
 
 - **Your persona** (the real-to-fake mapping) is stored **encrypted** on your machine with
-  age. The key lives in your keyring: KDE Wallet or another Secret Service on Linux, the login
+  age. The key is kept in your keyring: KDE Wallet or another Secret Service on Linux, the login
   Keychain on macOS. Nothing is sent anywhere.
 - Every real form maps to exactly one fake form, so translation is reversible.
-- Matching is Unicode-aware: case-insensitive, robust to invisible characters, full-width
+- Matching is Unicode-aware: case-insensitive, and not fooled by invisible characters, full-width
   letters and decomposed (NFD) text, and correct for Indic scripts and Hangul. A name inside a
   longer word is not matched.
 - **Fail closed**: on any error veil clears or blocks the clipboard instead of sending real
