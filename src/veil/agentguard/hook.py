@@ -18,6 +18,7 @@ from typing import Any
 
 from veil import ui
 from veil.agentguard.config import (
+    AGENT_NOTICE,
     GuardConfig,
     agent_log_path,
     candidate_rel_paths,
@@ -167,6 +168,18 @@ def run_stop() -> int:
     block_reason = evaluate_stop(payload)
     if block_reason is not None:
         ui.out(json.dumps({"decision": "block", "reason": block_reason}))
+    return int(ExitCode.OK)
+
+
+def run_session_start() -> int:
+    """Claude Code SessionStart hook."""
+    out = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": AGENT_NOTICE,
+        }
+    }
+    ui.out(json.dumps(out))
     return int(ExitCode.OK)
 
 

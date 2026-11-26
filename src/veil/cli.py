@@ -231,7 +231,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--print", action="store_true", help="print the merged JSON without writing"
     )
 
-    ag_hook = ag_commands.add_parser("hook", help="Claude Code hook entry points (pre, post, stop)")
+    ag_uninstall = ag_commands.add_parser(
+        "uninstall", help="remove veil agent-guard hooks and project notice blocks"
+    )
+    ag_uninstall.add_argument(
+        "--project", type=Path, default=None, metavar="DIR", help="project directory (default: cwd)"
+    )
+
+    ag_hook = ag_commands.add_parser(
+        "hook", help="Claude Code hook entry points (pre, post, stop, session-start)"
+    )
     ag_hook_commands = ag_hook.add_subparsers(dest="hook_command", metavar="HOOK")
     ag_hook_pre = ag_hook_commands.add_parser("pre", help="PreToolUse hook")
     ag_pre_mode = ag_hook_pre.add_mutually_exclusive_group()
@@ -239,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     ag_pre_mode.add_argument("--warn", action="store_true", help="return ask decision")
     ag_hook_commands.add_parser("post", help="PostToolUse audit log hook")
     ag_hook_commands.add_parser("stop", help="Stop hook (diff review and test_command check)")
+    ag_hook_commands.add_parser("session-start", help="SessionStart hook (injects veil notice)")
 
     ag_review = ag_commands.add_parser(
         "review", help="scan git diff for test, check, ML, security or guard tampering"
@@ -313,6 +323,11 @@ def _agent_guard_command(args: argparse.Namespace, parser: argparse.ArgumentPars
 
         project = args.project if args.project is not None else Path.cwd()
         return install_settings(project, warn=args.warn, print_only=args.print)
+    if args.agent_guard_command == "uninstall":
+        from veil.agentguard.install import uninstall_settings
+
+        project = args.project if args.project is not None else Path.cwd()
+        return uninstall_settings(project)
     if args.agent_guard_command == "hook":
         if args.hook_command == "pre":
             from veil.agentguard.hook import run_pre
@@ -326,6 +341,10 @@ def _agent_guard_command(args: argparse.Namespace, parser: argparse.ArgumentPars
             from veil.agentguard.hook import run_stop
 
             return run_stop()
+        if args.hook_command == "session-start":
+            from veil.agentguard.hook import run_session_start
+
+            return run_session_start()
         parser.parse_args(["agent-guard", "hook", "--help"])
     if args.agent_guard_command == "review":
         from veil.agentguard.review import run_review

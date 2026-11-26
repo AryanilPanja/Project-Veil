@@ -12,6 +12,15 @@ from veil.exitcodes import ExitCode
 
 CONFIG_FILENAME = ".veil-agent-guard.toml"
 
+AGENT_NOTICE = (
+    "veil is active on this machine.\n"
+    "Names, emails, phones, and other personal details you see may be pseudonyms from veil.\n"
+    "Keep them verbatim and never try to guess or recover real ones.\n"
+    "Never ask the user for real personal details.\n"
+    "Never run veil commands, read veil files, or read the clipboard.\n"
+    "agent-guard hooks review your edits and flag test or evaluation tampering."
+)
+
 DEFAULT_PROTECTED_PATTERNS: tuple[str, ...] = (
     "tests/**",
     "**/tests/**",

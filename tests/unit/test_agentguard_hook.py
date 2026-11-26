@@ -745,6 +745,30 @@ def test_hook_stop_passes_when_clean_and_test_command_succeeds(
     assert notifications == []
 
 
+def test_hook_session_start_outputs_notice_json(capsys):
+    code = cli.main(["agent-guard", "hook", "session-start"])
+    assert code == ExitCode.OK
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    hso = data["hookSpecificOutput"]
+    assert hso["hookEventName"] == "SessionStart"
+    notice = hso["additionalContext"]
+    lines = [ln for ln in notice.splitlines() if ln.strip()]
+    assert 1 <= len(lines) <= 8
+    low = notice.lower()
+    assert "veil" in low
+    assert "active" in low
+    assert "pseudonym" in low
+    assert "verbatim" in low
+    assert "recover" in low or "guess" in low
+    assert "never ask" in low
+    assert "real personal details" in low
+    assert "clipboard" in low
+    assert "veil commands" in low
+    assert "agent-guard" in low
+    assert "tampering" in low
+
+
 def test_cli_parser_does_not_eagerly_import_agentguard():
     code = (
         "import sys; from veil import cli; cli.build_parser(); "
