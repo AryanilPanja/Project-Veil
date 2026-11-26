@@ -188,7 +188,14 @@ def _filter(
         accepted: set[str] = set()
         for real, fake in zip(entity.real_forms, entity.fake_forms, strict=True):
             r, f = canon(real), canon(fake)
-            if r in accepted or r in taken_real or f in taken_fake:
+            if (
+                r == f
+                or r in accepted
+                or r in taken_real
+                or r in taken_fake
+                or f in taken_fake
+                or f in taken_real
+            ):
                 continue
             if not owner and (len(others_targets[r]) > 1 or len(others_sources[f]) > 1):
                 continue  # two other people derive it differently
