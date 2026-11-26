@@ -25,7 +25,7 @@ def build_hooks(*, warn: bool = False) -> dict[str, list[dict[str, Any]]]:
     return {
         "PreToolUse": [
             {
-                "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+                "matcher": ".*",
                 "hooks": [{"type": "command", "command": pre_cmd}],
             }
         ],

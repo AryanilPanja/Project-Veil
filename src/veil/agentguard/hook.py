@@ -24,6 +24,7 @@ from veil.agentguard.config import (
     is_outside_cwd,
     is_protected_dir,
     is_protected_path,
+    is_protected_secret_path,
     load_config,
     session_state_path,
 )
@@ -35,6 +36,11 @@ _GIT_HEAD_TIMEOUT = 5
 _WRAPPER_COMMANDS = frozenset({"env", "command", "time", "nice", "nohup", "sudo"})
 _SHELL_NAMES = frozenset({"sh", "bash", "zsh", "dash"})
 _WRITE_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+_READ_ONLY_TOOLS = frozenset(
+    {"Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch", "TodoWrite", "Task", "Agent"}
+)
+_SECRET_READ_TOOLS = frozenset({"Read", "Glob", "Grep"})
+_PATH_INPUT_FIELDS = ("file_path", "path", "notebook_path", "destination", "target")
 _REDIR_TOKENS = frozenset({">", ">>", ">|", "&>", "&>>"})
 _NOT_WORD_RE = re.compile(r"\bnot\b")
 _ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
@@ -55,25 +61,7 @@ class PreDecision:
 # ── Public entry points ──────────────────────────────────────────────────────
 
 
-def run_pre(*, warn: bool = False) -> int:
-    """Claude Code PreToolUse hook."""
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return int(ExitCode.OK)
-    try:
-        payload = json.loads(raw)
-    except json.JSONDecodeError:
-        ui.err("veil agent-guard: invalid hook JSON on stdin")
-        return int(ExitCode.HOOK_BLOCK)
-    if not isinstance(payload, dict):
-        return int(ExitCode.OK)
-
-    _ensure_session_head(payload)
-    decision = evaluate_pre(payload)
-    if decision.allowed:
-        return int(ExitCode.OK)
-
-    reason = decision.reason
+def _emit_pre_deny(reason: str, *, warn: bool = False) -> int:
     out = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
@@ -86,6 +74,32 @@ def run_pre(*, warn: bool = False) -> int:
         return int(ExitCode.OK)
     ui.err(reason)
     return int(ExitCode.HOOK_BLOCK)
+
+
+def run_pre(*, warn: bool = False) -> int:
+    """Claude Code PreToolUse hook (fails closed on any parse error or exception)."""
+    try:
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return _emit_pre_deny("veil agent-guard: invalid-input: empty hook stdin")
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return _emit_pre_deny("veil agent-guard: invalid-input: invalid hook JSON on stdin")
+        if not isinstance(payload, dict):
+            return _emit_pre_deny(
+                "veil agent-guard: invalid-input: hook payload must be a JSON object"
+            )
+
+        _ensure_session_head(payload)
+        decision = evaluate_pre(payload)
+        if decision.allowed:
+            return int(ExitCode.OK)
+        if decision.rule_id in ("invalid-input", "invalid-path"):
+            return _emit_pre_deny(decision.reason, warn=False)
+        return _emit_pre_deny(decision.reason, warn=warn)
+    except Exception:  # noqa: BLE001 - fail closed without leaking details
+        return _emit_pre_deny("veil agent-guard: hook-error: failing closed")
 
 
 def run_post() -> int:
@@ -127,30 +141,57 @@ def evaluate_pre(payload: dict[str, Any]) -> PreDecision:
     tool_name = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
-        return PreDecision(allowed=True)
+        return PreDecision(
+            allowed=False, rule_id="invalid-input", target="tool_input must be a JSON object"
+        )
 
     cwd = _resolve_cwd(payload.get("cwd"))
     config = load_config(cwd)
 
-    if tool_name in _WRITE_TOOLS:
-        raw_path = (
-            tool_input.get("file_path") or tool_input.get("notebook_path") or tool_input.get("path")
-        )
+    for key in _PATH_INPUT_FIELDS:
+        val = tool_input.get(key)
+        if isinstance(val, str) and "\x00" in val:
+            return PreDecision(allowed=False, rule_id="invalid-path", target="NUL byte in path")
+
+    if tool_name == "Bash":
+        command = tool_input.get("command")
+        if isinstance(command, str):
+            if "\x00" in command:
+                return PreDecision(
+                    allowed=False, rule_id="invalid-input", target="NUL byte in command"
+                )
+            if command.strip():
+                return _check_bash_command(command, cwd, config)
+        return PreDecision(allowed=True)
+
+    if tool_name in _READ_ONLY_TOOLS:
+        if tool_name in _SECRET_READ_TOOLS:
+            for key in _PATH_INPUT_FIELDS:
+                raw_path = tool_input.get(key)
+                if (
+                    isinstance(raw_path, str)
+                    and raw_path.strip()
+                    and is_protected_secret_path(raw_path, cwd) is not None
+                ):
+                    return PreDecision(
+                        allowed=False,
+                        rule_id="protected-secret-path",
+                        target=_display_target(raw_path, cwd),
+                    )
+        return PreDecision(allowed=True)
+
+    for key in _PATH_INPUT_FIELDS:
+        raw_path = tool_input.get(key)
         if isinstance(raw_path, str) and raw_path.strip():
             matched = is_protected_path(raw_path, cwd, config)
+            if matched is None:
+                matched = is_protected_dir(raw_path, cwd, config)
             if matched is not None:
                 return PreDecision(
                     allowed=False,
                     rule_id="protected-path",
                     target=_display_target(raw_path, cwd),
                 )
-        return PreDecision(allowed=True)
-
-    if tool_name == "Bash":
-        command = tool_input.get("command")
-        if isinstance(command, str) and command.strip():
-            return _check_bash_command(command, cwd, config)
-
     return PreDecision(allowed=True)
 
 

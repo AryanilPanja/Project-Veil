@@ -34,6 +34,7 @@ def test_install_fresh_project_creates_0600_settings_and_hooks(tmp_path, capsys)
     assert data["permissions"]["disableBypassPermissionsMode"] == "disable"
     for rule in template["permissions"]["deny"]:
         assert rule in data["permissions"]["deny"]
+    assert data["hooks"]["PreToolUse"][0]["matcher"] == ".*"
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "veil agent-guard hook pre"
     assert data["hooks"]["PostToolUse"][0]["hooks"][0]["command"] == "veil agent-guard hook post"
     assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == "veil agent-guard hook stop"
