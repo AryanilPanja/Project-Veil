@@ -1,0 +1,52 @@
+{
+  "$comment": "Veil agent guard for Claude Code. Copy to <project>/.claude/settings.json (or run `veil agent-guard install`). Keeps coding agents away from veil's key, persona, clipboard and kill switch, and runs their shell commands in the OS sandbox. Linux and macOS rules are both listed; a rule for a tool that is not installed is harmless.",
+  "permissions": {
+    "disableBypassPermissionsMode": "disable",
+    "deny": [
+      "Bash(*veil off*)", "Bash(*veil toggle*)", "Bash(*veil disable*)",
+      "Bash(*veil reverse*)", "Bash(*veil persona edit*)", "Bash(*veil diff*)",
+      "Bash(*veil vault review*)",
+      "Bash(*veil translate*)", "Bash(*veil audit*)",
+      "Bash(*veil clip*)", "Bash(*wl-paste*)", "Bash(*xsel*)", "Bash(*xclip*)",
+      "Bash(*klipper*)", "Bash(*Klipper*)",
+      "Bash(*pbpaste*)", "Bash(*pbcopy*)", "Bash(*osascript*)",
+      "Bash(*secret-tool*)", "Bash(*kwallet-query*)",
+      "Bash(*security find-generic-password*)", "Bash(*security find-internet-password*)",
+      "Bash(*security dump-keychain*)", "Bash(*security export*)",
+      "Bash(*security delete-generic-password*)", "Bash(*security unlock-keychain*)",
+      "Bash(*veil on*)", "Bash(*veil-watch*)", "Bash(*kill-switch-timer*)",
+      "Bash(*launchctl*veil*)", "Bash(*io.github.veil*)",
+      "Bash(*pkill*)", "Bash(*killall*)",
+      "Bash(*paste_spike*)",
+      "Bash(*gh repo delete*)", "Bash(*gh auth token*)", "Bash(*git push*--force*)",
+      "Read(~/.ssh/**)", "Read(~/.gnupg/**)", "Read(~/.config/gh/**)",
+      "Read(~/Library/Keychains/**)", "Read(~/.local/share/keyrings/**)",
+      "Read(~/.config/veil/**)", "Read(~/Library/Application Support/veil/**)",
+      "Read(**/persona.yaml)", "Read(**/*.age)", "Read(**/matrix-slots.txt)",
+      "Edit(~/.config/veil/**)", "Edit(~/Library/Application Support/veil/**)",
+      "Edit(~/Library/LaunchAgents/**)", "Edit(~/.config/systemd/**)"
+    ],
+    "ask": [
+      "Bash(git push*)", "Bash(gh pr create*)", "Bash(gh release*)",
+      "Edit(.github/workflows/**)", "Edit(pyproject.toml)", "Edit(uv.lock)"
+    ]
+  },
+  "sandbox": {
+    "enabled": true,
+    "allowUnsandboxedCommands": false,
+    "network": {
+      "allowedDomains": [
+        "pypi.org", "files.pythonhosted.org",
+        "github.com", "api.github.com", "objects.githubusercontent.com",
+        "codeload.github.com", "release-assets.githubusercontent.com"
+      ]
+    },
+    "filesystem": {
+      "allowWrite": ["~/.cache/uv", "~/.local/share/uv"],
+      "denyRead": [
+        "~/.ssh", "~/.gnupg", "~/.config/gh", "~/Library/Keychains",
+        "~/.config/veil", "~/Library/Application Support/veil"
+      ]
+    }
+  }
+}

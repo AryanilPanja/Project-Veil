@@ -17,3 +17,7 @@ class ExitCode(IntEnum):
     CLIPBOARD = 10  # no clipboard tool / display, or the tool failed or timed out
     INTERNAL = 70  # unexpected exception (class name only is shown)
     INTERRUPTED = 130  # SIGINT
+
+    # Aliases for agent-guard (same numeric codes; existing ADR-0027 codes unchanged)
+    HOOK_BLOCK = 2  # `veil agent-guard hook pre`: blocked tool call
+    HIGH_FINDINGS = 3  # `veil agent-guard review`: high-severity findings

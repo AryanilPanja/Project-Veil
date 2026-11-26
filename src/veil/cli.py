@@ -204,6 +204,49 @@ def build_parser() -> argparse.ArgumentParser:
     drafts.add_argument(
         "--discard-draft", action="store_true", help="delete the encrypted draft, then edit"
     )
+
+    agent_guard = commands.add_parser(
+        "agent-guard",
+        help="protect tests, checks and ML evaluation code from coding-agent tampering",
+    )
+    ag_commands = agent_guard.add_subparsers(dest="agent_guard_command", metavar="SUBCOMMAND")
+
+    ag_install = ag_commands.add_parser(
+        "install", help="merge guard rules and hooks into .claude/settings.json"
+    )
+    ag_install.add_argument(
+        "--project", type=Path, default=None, metavar="DIR", help="project directory (default: cwd)"
+    )
+    ag_install_mode = ag_install.add_mutually_exclusive_group()
+    ag_install_mode.add_argument(
+        "--block", action="store_true", help="hard-block protected actions (default)"
+    )
+    ag_install_mode.add_argument(
+        "--warn", action="store_true", help="ask for confirmation instead of blocking"
+    )
+    ag_install.add_argument(
+        "--print", action="store_true", help="print the merged JSON without writing"
+    )
+
+    ag_hook = ag_commands.add_parser("hook", help="Claude Code hook entry points (pre, post, stop)")
+    ag_hook_commands = ag_hook.add_subparsers(dest="hook_command", metavar="HOOK")
+    ag_hook_pre = ag_hook_commands.add_parser("pre", help="PreToolUse hook")
+    ag_pre_mode = ag_hook_pre.add_mutually_exclusive_group()
+    ag_pre_mode.add_argument("--block", action="store_true", help="hard-block (default)")
+    ag_pre_mode.add_argument("--warn", action="store_true", help="return ask decision")
+    ag_hook_commands.add_parser("post", help="PostToolUse audit log hook")
+    ag_hook_commands.add_parser("stop", help="Stop hook (diff review and test_command check)")
+
+    ag_review = ag_commands.add_parser(
+        "review", help="scan git diff for test, check, ML, security or guard tampering"
+    )
+    ag_review.add_argument(
+        "--base", metavar="REF", default=None, help="base git ref (default: merge-base or HEAD~1)"
+    )
+    ag_review.add_argument("--json", action="store_true", help="emit findings as JSON")
+    ag_review.add_argument(
+        "--notify", action="store_true", help="send desktop notification on high findings"
+    )
     return parser
 
 
@@ -253,7 +296,38 @@ def run(argv: Sequence[str] | None) -> int:
         return _persona_edit(args)
     if args.command == "persona":
         parser.parse_args(["persona", "--help"])
+    if args.command == "agent-guard" and args.agent_guard_command:
+        return _agent_guard_command(args, parser)
+    if args.command == "agent-guard":
+        parser.parse_args(["agent-guard", "--help"])
     parser.print_help()
+    return int(ExitCode.OK)
+
+
+def _agent_guard_command(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    if args.agent_guard_command == "install":
+        from veil.agentguard.install import install_settings
+
+        project = args.project if args.project is not None else Path.cwd()
+        return install_settings(project, warn=args.warn, print_only=args.print)
+    if args.agent_guard_command == "hook":
+        if args.hook_command == "pre":
+            from veil.agentguard.hook import run_pre
+
+            return run_pre(warn=args.warn)
+        if args.hook_command == "post":
+            from veil.agentguard.hook import run_post
+
+            return run_post()
+        if args.hook_command == "stop":
+            from veil.agentguard.hook import run_stop
+
+            return run_stop()
+        parser.parse_args(["agent-guard", "hook", "--help"])
+    if args.agent_guard_command == "review":
+        from veil.agentguard.review import run_review
+
+        return run_review(Path.cwd(), base=args.base, as_json=args.json, notify_user=args.notify)
     return int(ExitCode.OK)
 
 
