@@ -658,6 +658,12 @@ def test_hook_stop_blocks_on_high_findings_and_notifies(
     assert "test-deleted" in decision["reason"]
     assert len(notifications) == 1
 
+    # The agent stops again after the block: flag it, but don't loop (stop_hook_active).
+    again = {**stop_payload, "stop_hook_active": True}
+    assert _run_hook(monkeypatch, ["agent-guard", "hook", "stop"], again) == ExitCode.OK
+    assert capsys.readouterr().out == ""
+    assert len(notifications) == 2
+
 
 def test_hook_stop_runs_test_command_and_blocks_on_failure(
     monkeypatch, tmp_path, capsys, notifications
