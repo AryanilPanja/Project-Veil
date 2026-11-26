@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="veil">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a2f8f"/>
+      <stop offset="1" stop-color="#14857f"/>
+    </linearGradient>
+    <linearGradient id="drape" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.92"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.42"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="60" fill="url(#tile)"/>
+  <!-- the eye -->
+  <path d="M36 158 C 76 110, 180 110, 220 158 C 180 206, 76 206, 36 158 Z"
+        fill="none" stroke="#ffffff" stroke-width="11" stroke-linejoin="round"/>
+  <circle cx="128" cy="158" r="26" fill="#ffffff"/>
+  <circle cx="128" cy="158" r="10" fill="#2a3f8a"/>
+  <!-- the veil: gathered at the top, falling over the upper half of the eye -->
+  <path d="M128 30
+           C 100 30, 56 84, 30 160
+           C 46 176, 66 176, 80 162
+           C 94 178, 114 178, 128 162
+           C 142 178, 162 178, 176 162
+           C 190 176, 210 176, 226 160
+           C 200 84, 156 30, 128 30 Z"
+        fill="url(#drape)"/>
+  <path d="M128 34 C 112 70, 92 118, 80 160 M128 34 V 124 M128 34 C 144 70, 164 118, 176 160"
+        fill="none" stroke="#3a2f8f" stroke-opacity="0.16" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="128" cy="30" r="7" fill="#ffffff"/>
+</svg>
