@@ -79,6 +79,8 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 CI runs the same checks on every push and pull request (`.github/workflows/ci.yml`).
+To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) first: contributions need a signed
+[contributor agreement](CONTRIBUTOR-AGREEMENT.md) and go through pull requests into `main`.
 
 ## Privacy rules for contributors
 - Never commit real personal data: not in code, tests, fixtures, logs or commit messages. Tests
@@ -92,4 +94,4 @@ CI runs the same checks on every push and pull request (`.github/workflows/ci.ym
 - Me (Dumb Human)
 
 ## License
-Proprietary: all rights reserved. The source is publicly visible, but no permission is granted to use, copy, modify, or distribute it. See [LICENSE](LICENSE).
+Proprietary: all rights reserved. The source is publicly visible, but no permission is granted to use, copy, modify, or distribute it, except to contributors who have signed the [contributor agreement](CONTRIBUTOR-AGREEMENT.md), for their contributions only. See [LICENSE](LICENSE).
