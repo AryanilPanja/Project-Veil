@@ -39,6 +39,14 @@ class _Parser(argparse.ArgumentParser):
     (`veil translate "<your name>"`), and errors land in terminals and logs (sweep 2026-10-26).
     Subcommand parsers inherit this class."""
 
+    def print_help(self, file=None) -> None:
+        # The banner: top-level help in a terminal only (never in pipes, hooks or the watcher).
+        if self.prog == "veil" and file is None and ui.stdout_is_tty():
+            from veil import banner
+
+            ui.out(banner.render(veil.__version__, color=banner.use_color(True)))
+        super().print_help(file)
+
     def error(self, message: str):
         message = re.sub(
             r"unrecognized arguments: .*", "unrecognized arguments (not shown)", message, flags=re.S
@@ -120,8 +128,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
-        help="set up the KDE Plasma hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V) as System "
-        "Settings would",
+        help="KDE Plasma: set up the hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V); "
+        "macOS: print the Shortcuts.app steps",
     )
     shortcuts.add_argument(
         "--key",
@@ -522,7 +530,7 @@ def _shortcuts_command(args: argparse.Namespace) -> int:
         chosen = shortcuts.with_keys(overrides)
     except (ValueError, KeyError) as exc:
         raise VeilError(f"--key: {exc}", exit_code=ExitCode.USAGE) from None
-    if args.print:
+    if args.print or sys.platform == "darwin":  # macOS: no API to add them; print the steps
         for line in shortcuts.manual_steps(chosen=chosen):
             ui.out(line)
         return int(ExitCode.OK)
