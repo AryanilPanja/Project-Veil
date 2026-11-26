@@ -24,9 +24,14 @@ DEFAULT_PROTECTED_PATTERNS: tuple[str, ...] = (
     "pyproject.toml",
     ".claude/settings*.json",
     "contrib/agent-guard/**",
+    "src/veil/agentguard/**",
     ".pre-commit-config.yaml",
     ".git/hooks/**",
+    ".git/config",
     ".veil-agent-guard.toml",
+    "**/persona.yaml",
+    "**/*.age",
+    "**/matrix-slots.txt",
 )
 
 PROTECTED_DIR_PREFIXES: tuple[str, ...] = (
@@ -35,8 +40,28 @@ PROTECTED_DIR_PREFIXES: tuple[str, ...] = (
     ".github/workflows",
     ".claude",
     "contrib/agent-guard",
+    "src/veil/agentguard",
     ".git",
     ".git/hooks",
+)
+
+_SECRET_BASENAME_PATTERNS: tuple[str, ...] = (
+    "**/persona.yaml",
+    "**/*.age",
+    "**/matrix-slots.txt",
+)
+
+_SECRET_HOME_REL_DIRS: tuple[str, ...] = (
+    ".config/veil",
+    "Library/Application Support/veil",
+    "Library/Keychains",
+    ".ssh",
+    ".gnupg",
+)
+
+_GUARD_HOME_REL_DIRS: tuple[str, ...] = (
+    "Library/Logs/veil",
+    ".local/state/veil",
 )
 
 _MAX_CONFIG_BYTES = 1_048_576
@@ -110,9 +135,31 @@ def _as_str_tuple(value: object, field_name: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value if item.strip())
 
 
+def _expand_env_vars(raw_path: str) -> str:
+    cleaned = raw_path.strip()
+    home = str(Path.home())
+    for token in ("$HOME", "${HOME}"):
+        if cleaned == token or cleaned.startswith(token + "/"):
+            cleaned = home + cleaned[len(token) :]
+            break
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_cfg:
+        for token in ("$XDG_CONFIG_HOME", "${XDG_CONFIG_HOME}"):
+            if cleaned == token or cleaned.startswith(token + "/"):
+                cleaned = xdg_cfg.rstrip("/") + cleaned[len(token) :]
+                break
+    xdg_state = os.environ.get("XDG_STATE_HOME", "").strip()
+    if xdg_state:
+        for token in ("$XDG_STATE_HOME", "${XDG_STATE_HOME}"):
+            if cleaned == token or cleaned.startswith(token + "/"):
+                cleaned = xdg_state.rstrip("/") + cleaned[len(token) :]
+                break
+    return cleaned
+
+
 def candidate_rel_paths(raw_path: str, cwd: Path) -> list[str]:
     """Return normalized POSIX path candidates (lexical and resolved) relative to `cwd`."""
-    cleaned = raw_path.strip()
+    cleaned = _expand_env_vars(raw_path)
     if not cleaned:
         return []
     path = Path(cleaned).expanduser() if cleaned.startswith("~") else Path(cleaned)
@@ -124,11 +171,12 @@ def candidate_rel_paths(raw_path: str, cwd: Path) -> list[str]:
         if lex and not lex.startswith(".."):
             candidates.append(lex)
     else:
+        lex_abs = path.as_posix()
         try:
             rel_lex = path.relative_to(cwd).as_posix()
             candidates.append(rel_lex)
         except ValueError:
-            pass
+            candidates.append(lex_abs)
 
     # Resolved candidate (catches symlinks pointing into protected dirs & macOS /tmp)
     try:
@@ -189,9 +237,108 @@ def matches_any(rel_path: str, patterns: tuple[str, ...]) -> str | None:
     return None
 
 
+def _dir_bases_for_rel(rel_from_home: str) -> list[str]:
+    bases: list[str] = []
+    home = Path.home()
+    for base_home in (home, home.resolve()):
+        posix = (base_home / rel_from_home).as_posix()
+        if posix not in bases:
+            bases.append(posix)
+    return bases
+
+
+def _matches_dir_or_child(candidate: str, base_dir: str) -> bool:
+    cand_norm = candidate.rstrip("/")
+    base_norm = base_dir.rstrip("/")
+    return cand_norm == base_norm or cand_norm.startswith(base_norm + "/")
+
+
+def _abs_path_candidates(raw_path: str, cwd: Path) -> list[str]:
+    cleaned = _expand_env_vars(raw_path)
+    if not cleaned:
+        return []
+    p = Path(cleaned).expanduser() if cleaned.startswith("~") else Path(cleaned)
+    target = p if p.is_absolute() else (cwd / p)
+    out = [target.as_posix()]
+    try:
+        res = target.resolve().as_posix()
+        if res not in out:
+            out.append(res)
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def is_protected_secret_path(raw_path: str, cwd: Path) -> str | None:
     """Return matching rule if `raw_path` refers to a veil/credential secret path."""
-    del raw_path, cwd
+    cleaned = raw_path.strip()
+    if not cleaned:
+        return None
+    norm_raw = _lexical_norm(cleaned)
+    for prefix in ("$XDG_CONFIG_HOME/veil", "${XDG_CONFIG_HOME}/veil"):
+        if _matches_dir_or_child(norm_raw, prefix):
+            return "$XDG_CONFIG_HOME/veil/**"
+    for rel_dir in _SECRET_HOME_REL_DIRS:
+        for prefix in (f"~/{rel_dir}", f"$HOME/{rel_dir}", f"${{HOME}}/{rel_dir}"):
+            if _matches_dir_or_child(norm_raw, prefix):
+                return f"~/{rel_dir}/**"
+
+    candidates = candidate_rel_paths(cleaned, cwd)
+    for cand in candidates:
+        matched = matches_any(cand, _SECRET_BASENAME_PATTERNS)
+        if matched is not None:
+            return matched
+
+    abs_dirs: list[tuple[str, str]] = []
+    for rel_dir in _SECRET_HOME_REL_DIRS:
+        for base in _dir_bases_for_rel(rel_dir):
+            abs_dirs.append((base, f"~/{rel_dir}/**"))
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    if xdg_cfg and Path(xdg_cfg).is_absolute():
+        for base in (Path(xdg_cfg) / "veil", Path(xdg_cfg).resolve() / "veil"):
+            abs_dirs.append((base.as_posix(), "$XDG_CONFIG_HOME/veil/**"))
+
+    for cand in _abs_path_candidates(cleaned, cwd):
+        for base, label in abs_dirs:
+            if _matches_dir_or_child(cand, base):
+                return label
+    return None
+
+
+def _is_protected_guard_home_or_state(raw_path: str, cwd: Path) -> str | None:
+    cleaned = raw_path.strip()
+    if not cleaned:
+        return None
+    norm_raw = _lexical_norm(cleaned)
+    for prefix in ("$XDG_STATE_HOME/veil", "${XDG_STATE_HOME}/veil"):
+        if _matches_dir_or_child(norm_raw, prefix):
+            return "$XDG_STATE_HOME/veil/**"
+    for rel_dir in _GUARD_HOME_REL_DIRS:
+        for prefix in (f"~/{rel_dir}", f"$HOME/{rel_dir}", f"${{HOME}}/{rel_dir}"):
+            if _matches_dir_or_child(norm_raw, prefix):
+                return f"~/{rel_dir}/**"
+
+    abs_cands = _abs_path_candidates(cleaned, cwd)
+    abs_dirs: list[tuple[str, str]] = []
+    for rel_dir in _GUARD_HOME_REL_DIRS:
+        for base in _dir_bases_for_rel(rel_dir):
+            abs_dirs.append((base, f"~/{rel_dir}/**"))
+    sdir = state_dir()
+    for base in (sdir, sdir.resolve()):
+        abs_dirs.append((base.as_posix(), "agent-guard-state/**"))
+
+    claude_patterns: list[str] = []
+    for base in _dir_bases_for_rel(".claude"):
+        claude_patterns.append(f"{base}/settings*.json")
+
+    for cand in abs_cands:
+        for base, label in abs_dirs:
+            if _matches_dir_or_child(cand, base):
+                return label
+        p = PurePosixPath(cand)
+        for pat in claude_patterns:
+            if p.full_match(pat):
+                return "~/.claude/settings*.json"
     return None
 
 
@@ -200,6 +347,9 @@ def is_protected_path(raw_path: str, cwd: Path, config: GuardConfig) -> str | No
     secret_match = is_protected_secret_path(raw_path, cwd)
     if secret_match is not None:
         return secret_match
+    guard_home_match = _is_protected_guard_home_or_state(raw_path, cwd)
+    if guard_home_match is not None:
+        return guard_home_match
     candidates = candidate_rel_paths(raw_path, cwd)
     if not candidates:
         return None

@@ -279,10 +279,136 @@ def test_hook_pre_allows_unknown_tool_without_protected_paths(monkeypatch, tmp_p
         "pytest --deselect tests/test_app.py::test_add",
         'pytest -k "not slow"',
         'uv run python -m pytest -k "not slow"',
+        # Bug 3: newline / CR / comment-newline separators
+        "echo hi\nrm tests/test_app.py",
+        "echo hi\rrm tests/test_app.py",
+        "echo hi\r\nrm tests/test_app.py",
+        "echo hi # comment\nrm tests/test_app.py",
+        'echo "unclosed\nrm tests/test_app.py',
+        # Bug 4: wrappers, short-flag -c, command substitution, $VAR, globs, cd
+        "env -u FOO rm tests/test_app.py",
+        "env -i PATH=/usr/bin FOO=1 rm tests/test_app.py",
+        'env -S "rm tests/test_app.py"',
+        "nice -n 5 rm tests/test_app.py",
+        "nice -5 rm tests/test_app.py",
+        "timeout 5 rm tests/test_app.py",
+        "timeout -s KILL 5 rm tests/test_app.py",
+        "nohup rm tests/test_app.py",
+        "xargs rm",
+        "xargs -I{} rm {}",
+        "command rm tests/test_app.py",
+        "exec rm tests/test_app.py",
+        "sudo -u root rm tests/test_app.py",
+        "time rm tests/test_app.py",
+        "stdbuf -o0 rm tests/test_app.py",
+        "stdbuf -o L rm tests/test_app.py",
+        "bash -ec 'rm tests/test_app.py'",
+        "sh -xec 'rm tests/test_app.py'",
+        "zsh -lc 'rm tests/test_app.py'",
+        "dash -ce 'rm tests/test_app.py'",
+        "echo $(rm tests/test_app.py)",
+        'echo "$(rm tests/test_app.py)"',
+        "echo `rm tests/test_app.py`",
+        'echo "`rm tests/test_app.py`"',
+        "T=tests; rm $T/a.py",
+        "rm ${T}/a.py",
+        "rm t*s/a.py",
+        "cd tests && rm helpers.py",
+        "cd tests && echo x > a.py",
+        "cd tests; sed -i 's/1/2/' a.py",
+        "mv $T/a.py /tmp/x",
+        "truncate -s 0 t*s/a.py",
+        "echo x > $OUT",
+        "echo x > t*s/a.py",
+        # Bug 5: unlisted writers & inline interpreters
+        "find tests -delete",
+        "find . -delete",
+        "find -delete",
+        "find tests -exec rm {} +",
+        "find tests -execdir rm -f {} ;",
+        "dd if=/dev/zero of=tests/a.py",
+        "dd of=pyproject.toml",
+        "ln -sf /dev/null tests/a.py",
+        "ln -f fake.py tests/a.py",
+        "ln -s /dev/null tests/a.py",
+        "truncate -s0 tests/a.py",
+        "python -c \"open('tests/a.py','w')\"",
+        "python3 -c \"import pathlib; pathlib.Path('pyproject.toml').unlink()\"",
+        "node -e \"require('fs').writeFileSync('tests/a.py', '')\"",
+        "perl -e \"unlink 'tests/a.py'\"",
+        "ruby -e \"File.delete('tests/a.py')\"",
+        # Bug 6: veil commands, clipboard, keychains, quote stripping
+        "pbpaste",
+        "pbcopy",
+        "p''bpaste",
+        '"pb"paste',
+        "osascript -e 'the clipboard'",
+        "wl-paste",
+        "wl-copy",
+        "xclip -o",
+        "xsel -ob",
+        "security find-generic-password -s veil",
+        "security find-internet-password -s example",
+        "security dump-keychain",
+        "security export -k login.keychain",
+        "security delete-generic-password -s veil",
+        "security unlock-keychain",
+        'security "find-generic-password" -s veil',
+        "secret-tool lookup service veil",
+        "kwallet-query kdewallet -r veil",
+        "veil off",
+        "veil toggle",
+        "veil disable",
+        "veil reverse",
+        "veil persona edit",
+        "veil vault review",
+        "veil diff",
+        "veil translate",
+        "veil audit",
+        "veil clip sanitize",
+        "veil on",
+        '"v"eil "o"ff',
+        "launchctl stop io.github.veil.watch",
+        "launchctl unload ~/Library/LaunchAgents/veil.plist",
+        "systemctl --user stop veil-watch",
+        # Bug 6: veil secret paths via Bash read/write
+        "cat ~/.config/veil/persona.yaml",
+        "cat ~/Library/Application\\ Support/veil/key.age",
+        "cat $XDG_CONFIG_HOME/veil/store.age",
+        "cat secrets/persona.yaml",
+        "head keys/vault.age",
+        "cat config/matrix-slots.txt",
+        "cat ~/Library/Keychains/login.keychain-db",
+        "cat ~/.ssh/id_rsa",
+        "cat ~/.gnupg/secring.gpg",
+        # Bug 7: guard and trail writes via Bash
+        "rm ~/.claude/settings.json",
+        "echo {} > ~/.claude/settings.local.json",
+        "sed -i 's/a/b/' src/veil/agentguard/hook.py",
+        "echo x > .git/config",
+        "rm .git/hooks/pre-commit",
+        # Bug 9: destructive git
+        "git checkout -- .",
+        "git checkout .",
+        "git restore .",
+        "git restore -- .",
+        "git restore -SW .",
+        "git clean -f",
+        "git clean -fd",
+        "git clean -fx",
+        "git clean --force",
+        "git push -uf origin main",
+        "git push --force-with-lease origin main",
+        "git push --force-if-includes",
+        "git push origin +main",
+        "git push origin +HEAD:main",
+        "rm -rf *",
+        "rm -rf .",
     ],
 )
 def test_hook_pre_blocks_dangerous_bash(monkeypatch, tmp_path, capsys, command):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    (tmp_path / "tests").mkdir(exist_ok=True)
     payload = {
         "session_id": "sess-bash",
         "tool_name": "Bash",
@@ -306,6 +432,15 @@ def test_hook_pre_blocks_dangerous_bash(monkeypatch, tmp_path, capsys, command):
         "git diff tests/test_app.py",
         "rm -rf build/",
         "echo ok > /dev/null",
+        "cd tests && pytest",
+        "ls tests/*.py",
+        "git checkout main",
+        "git checkout -b feature/x",
+        "git clean -n",
+        "git push origin main",
+        "veil status",
+        "veil agent-guard review",
+        "find tests -name '*.py'",
     ],
 )
 def test_hook_pre_allows_safe_bash(monkeypatch, tmp_path, capsys, command):
@@ -320,6 +455,96 @@ def test_hook_pre_allows_safe_bash(monkeypatch, tmp_path, capsys, command):
     assert code == ExitCode.OK
     captured = capsys.readouterr()
     assert captured.out == ""
+
+
+@pytest.mark.parametrize("tool_name", ["Read", "Glob", "Grep", "Edit", "Write"])
+@pytest.mark.parametrize(
+    "secret_path",
+    [
+        "~/.config/veil/store.age",
+        "~/Library/Application Support/veil/keys.age",
+        "persona.yaml",
+        "nested/dir/persona.yaml",
+        "vault/key.age",
+        "matrix-slots.txt",
+        "~/Library/Keychains/login.keychain-db",
+        "~/.ssh/id_ed25519",
+        "~/.gnupg/private-keys-v1.d/key",
+    ],
+)
+def test_hook_pre_blocks_veil_secrets_read_and_write(
+    monkeypatch, tmp_path, capsys, tool_name, secret_path
+):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-sec",
+        "tool_name": tool_name,
+        "tool_input": {"file_path": secret_path, "path": secret_path},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+def test_hook_pre_blocks_xdg_config_home_veil_secret(monkeypatch, tmp_path, capsys):
+    xdg_cfg = tmp_path / "xdg-cfg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_cfg))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-xdg",
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(xdg_cfg / "veil" / "store.bin")},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+@pytest.mark.parametrize(
+    "guard_path",
+    [
+        ".claude/settings.json",
+        ".claude/settings.local.json",
+        "~/.claude/settings.json",
+        "~/.claude/settings.local.json",
+        "src/veil/agentguard/hook.py",
+        "src/veil/agentguard/install.py",
+        "~/Library/Logs/veil/agent-log.jsonl",
+        ".git/config",
+        ".git/hooks/post-commit",
+    ],
+)
+def test_hook_pre_blocks_guard_and_trail_writes(monkeypatch, tmp_path, capsys, guard_path):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    payload = {
+        "session_id": "sess-guard-write",
+        "tool_name": "Write",
+        "tool_input": {"file_path": guard_path},
+        "cwd": str(tmp_path),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
+
+
+def test_hook_pre_blocks_state_dir_writes(monkeypatch, tmp_path, capsys):
+    state_home = tmp_path / "custom-state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    for target in (
+        state_home / "veil" / "agent-log.jsonl",
+        state_home / "veil" / "sessions" / "abc.json",
+    ):
+        payload = {
+            "session_id": "sess-state-write",
+            "tool_name": "Edit",
+            "tool_input": {"file_path": str(target)},
+            "cwd": str(tmp_path),
+        }
+        code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+        assert code == 2
+        _assert_deny_json(capsys)
 
 
 def test_hook_pre_respects_toml_protected_and_allow(monkeypatch, tmp_path, capsys):
