@@ -6,8 +6,9 @@ Files in the config dir (0700; files 0600):
 
 Rules:
 - The key lives in the freedesktop Secret Service (KDE ksecretd / GNOME keyring), reached through
-  `secretstorage` directly (ADR-0025 amendment 3). There is no backend selection at all, so
-  nothing (config, environment) can swap in a backend that stores the key in plaintext.
+  `secretstorage` directly (ADR-0025 amendment 3), or on macOS in the login Keychain
+  (crypto/keychain.py). The backend follows sys.platform only, so nothing (config, environment)
+  can swap in a backend that stores the key in plaintext.
 - No automatic fallback between keyring and passphrase mode; the mode is chosen at setup.
 - Never generate a key while any key or encrypted store exists (`create` refuses).
 - Every keyring call runs in a worker thread with a hard timeout: KDE's ksecretd can hang or drop
@@ -17,6 +18,7 @@ Rules:
 import contextlib
 import hashlib
 import os
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -38,7 +40,10 @@ _MAX_RECIPIENT_BYTES = 1024
 _MAX_KEY_FILE_BYTES = 64 * 1024
 
 # keyring / secretstorage / jeepney exception class names meaning "locked or prompt refused".
-_LOCKED = frozenset({"KeyringLocked", "LockedException", "PromptDismissedException"})
+_LOCKED = frozenset(
+    {"KeyringLocked", "LockedException", "PromptDismissedException", "KeychainLocked"}
+)
+_KEYRING_NAME = "the login Keychain" if sys.platform == "darwin" else "KDE Wallet"
 
 
 class SecretBackend(Protocol):
@@ -53,7 +58,12 @@ class KeyBackend(StrEnum):
 
 
 def secret_service_backend() -> SecretBackend:
-    """The Secret Service backend (KDE ksecretd / GNOME keyring), via secretstorage directly."""
+    """The platform keyring: the login Keychain on macOS, else the Secret Service (KDE ksecretd
+    / GNOME keyring) via secretstorage directly."""
+    if sys.platform == "darwin":
+        from veil.crypto.keychain import KeychainBackend  # lazy: ctypes frameworks load on use
+
+        return KeychainBackend()
     return SecretStorageBackend()
 
 
@@ -328,7 +338,7 @@ class KeyStore:
         if worker.is_alive():
             raise KeyUnavailable(
                 f"the keyring did not answer within {self.timeout:g} s "
-                "(is an unlock prompt waiting? unlock KDE Wallet and try again)"
+                f"(is an unlock prompt waiting? unlock {_KEYRING_NAME} and try again)"
             )
         if failure:
             raise _keyring_error(failure[0]) from None
@@ -340,8 +350,8 @@ def _keyring_error(exc: BaseException) -> VeilError:
         return exc
     names = {cls.__name__ for cls in type(exc).__mro__}
     if names & _LOCKED:
-        return KeyUnavailable("the keyring is locked; unlock KDE Wallet and try again")
-    return KeyUnavailable(f"the keyring (Secret Service) is not available ({type(exc).__name__})")
+        return KeyUnavailable(f"the keyring is locked; unlock {_KEYRING_NAME} and try again")
+    return KeyUnavailable(f"the keyring is not available ({type(exc).__name__})")
 
 
 def _refuse(reason: str) -> VeilError:

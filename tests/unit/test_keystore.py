@@ -1,6 +1,7 @@
 """crypto/keystore.py: keyring and passphrase identity storage. Never touches the real keyring."""
 
 import stat
+import sys
 import threading
 import time
 
@@ -375,7 +376,7 @@ class TestKeyringFailures:
 
     @pytest.mark.parametrize("error", [LockedException(), PromptDismissedException()])
     def test_locked_or_dismissed(self, set_up, error):
-        with pytest.raises(KeyUnavailable, match="locked; unlock KDE Wallet") as info:
+        with pytest.raises(KeyUnavailable, match="locked; unlock ") as info:
             make(set_up, FailingKeyring(error)).load()
         assert info.value.exit_code == ExitCode.KEY_UNAVAILABLE
 
@@ -517,7 +518,12 @@ class TestStatusAndPinning:
         # The autouse fixture replaced the factory; check the real one, without calling D-Bus.
         real = importlib.reload(importlib.import_module("veil.crypto.keystore"))
         try:
-            assert isinstance(real.secret_service_backend(), real.SecretStorageBackend)
+            if sys.platform == "darwin":
+                from veil.crypto.keychain import KeychainBackend
+
+                assert isinstance(real.secret_service_backend(), KeychainBackend)
+            else:
+                assert isinstance(real.secret_service_backend(), real.SecretStorageBackend)
         finally:
             importlib.reload(real)
             monkeypatch.setattr(real, "secret_service_backend", keystore.secret_service_backend)
