@@ -6,6 +6,7 @@ refusals, timeouts, key chords. Never the real portal (it would type into the ow
 import pytest
 
 from tests.helpers import privatebus
+from tests.unit.test_agent_deny_rules import deny as deny
 from veil import paths
 from veil.clip import portal
 from veil.clip.portal import (
@@ -227,11 +228,5 @@ class TestToken:
         assert portal.load_token(paths.config_dir()) is None
 
 
-def test_spike_script_is_denied_to_agents():
-    import json
-    from pathlib import Path
-
-    deny = json.loads(Path(".claude/settings.json").read_text(encoding="utf-8"))["permissions"][
-        "deny"
-    ]
+def test_spike_script_is_denied_to_agents(deny):
     assert "Bash(*paste_spike*)" in deny
