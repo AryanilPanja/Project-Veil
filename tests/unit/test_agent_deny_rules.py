@@ -1,6 +1,11 @@
-"""The agent deny rules in .claude/settings.json keep the rules CLAUDE.md promises (P0.5, Q11, M2.2)."""
+"""The agent deny rules in .claude/settings.json keep the rules CLAUDE.md promises (P0.5, Q11, M2.2).
+
+`.claude/` is git-ignored (local-only agent config), so a CI checkout has no settings file: these
+tests skip there. Locally a missing file is a failure, so the rules can't silently disappear.
+"""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -10,6 +15,8 @@ SETTINGS = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
 
 @pytest.fixture(scope="module")
 def deny() -> list[str]:
+    if not SETTINGS.exists() and os.environ.get("CI"):
+        pytest.skip(".claude/settings.json is local-only (git-ignored); not in a CI checkout")
     return json.loads(SETTINGS.read_text(encoding="utf-8"))["permissions"]["deny"]
 
 
