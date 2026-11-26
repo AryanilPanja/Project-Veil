@@ -135,3 +135,30 @@ def test_derived_filter_rejects_cross_collision_between_real_and_fake():
     assert engine.forward("alexs") == "alexs"
 
 
+def test_academic_year_fails_closed_when_institution_kept_and_degree_disabled():
+    from tests.unit.test_matcher import FIXTURE, lexicon_from
+    from veil.engine.matcher import Engine
+
+    base = FIXTURE.read_text(encoding="utf-8")
+    for aliases_line in (
+        "    aliases:     { real: [XYZIT, XYZ-IT], fake: [] }",
+        "    aliases:     { real: [XYZIT, XYZ-IT], fake: [ABCU, ABC-U] }",
+    ):
+        text = (
+            base.replace(
+                "  - institution: { real: XYZ Institute of Technology, fake: ABC University }",
+                "  - institution: { real: XYZ Institute of Technology, policy: KEEP }",
+            )
+            .replace("    aliases:     { real: [XYZIT, XYZ-IT], fake: [ABCU, ABC-U] }", aliases_line)
+            .replace("    degree:\n      enabled: true", "    degree:\n      enabled: false")
+        )
+        engine = Engine(lexicon_from(text))
+        assert engine.forward("I am an MS student in 2nd year.") == "I am an MS student in 2nd year."
+        assert (
+            engine.forward("2nd year at XYZ Institute of Technology")
+            == "2nd year at XYZ Institute of Technology"
+        )
+        assert engine.reverse("Her 3rd year was elsewhere.") == "Her 3rd year was elsewhere."
+
+
+
