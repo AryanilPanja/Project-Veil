@@ -31,3 +31,50 @@ def test_joiner_inside_indic_text_is_kept():
 def test_long_joiner_run_is_bounded_and_folded():
     text = "a" + "‍" * 10_000 + "b"
     assert normalize.canon(text) == "ab"
+
+
+# ── sensitive terms in the text commands (ADR-0012) ───────────────────────────
+
+
+def _engine():
+    from tests.unit.test_matcher import FIXTURE, lexicon_from
+    from veil.engine.matcher import Engine
+
+    return Engine(lexicon_from(FIXTURE.read_text(encoding="utf-8")))
+
+
+def test_translate_generalizes_sensitive_terms(tmp_path, capsys):
+    from veil import textcmd
+
+    src = tmp_path / "in.txt"
+    src.write_text("Jane Doe has asthma.\n", encoding="utf-8")
+    engine = _engine()
+    assert textcmd.translate(lambda: engine, src) == 0
+    out, err = capsys.readouterr()
+    assert "asthma" not in out
+    assert "a chronic condition" in out
+    assert "asthma" not in err
+    assert "generalized 1 sensitive term(s)" in err
+
+
+def test_audit_reports_sensitive_terms_without_the_term(tmp_path, capsys):
+    from veil import textcmd
+
+    src = tmp_path / "in.txt"
+    src.write_text("ok\nhas asthma\n", encoding="utf-8")
+    engine = _engine()
+    assert textcmd.audit(lambda: engine, src) == 1
+    out = capsys.readouterr().out
+    assert "asthma" not in out
+    assert "2:5  " in out
+    assert "(sensitive " in out
+
+
+def test_parser_hides_value_in_ignored_explicit_argument(capsys):
+    import pytest
+
+    from veil import cli
+
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["--version=JANEDOE"])
+    assert "JANEDOE" not in capsys.readouterr().err

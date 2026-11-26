@@ -47,6 +47,9 @@ class _Parser(argparse.ArgumentParser):
         message = re.sub(rf"invalid choice: {_REPR}", "invalid choice", message)
         message = re.sub(rf"invalid (\S+) value: {_REPR}", r"invalid \1 value", message)
         message = re.sub(
+            rf"ignored explicit argument {_REPR}", "ignored explicit argument", message
+        )
+        message = re.sub(
             r"ambiguous option: .*? could match",
             "ambiguous option, could match",
             message,
