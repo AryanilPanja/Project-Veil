@@ -60,9 +60,11 @@ def _fill_entity(entity: Entity, vault: Vault, taken: "_Taken", surname: str, sh
         taken.add(real, fake)
         reals.append(real)
         fakes.append(fake)
+        own_reals = {canon(real)}
         for alt_real, alt_fake in generate.variants_for(entity.role, real, fake):
-            if canon(alt_real) not in {canon(r) for r in reals} and taken.free(alt_real, alt_fake):
+            if taken.variant_free(alt_real, alt_fake, own_reals):
                 taken.add(alt_real, alt_fake)
+                own_reals.add(canon(alt_real))
                 reals.append(alt_real)
                 fakes.append(alt_fake)
     return replace(entity, real_forms=tuple(reals), fake_forms=tuple(fakes), needs_generation=False)
@@ -111,6 +113,22 @@ class _Taken:
         if self._index_reals.find(fake):  # some real form sits inside this fake
             return False
         return not any(contains_bounded(fake, other) for other in self.reals)
+
+    def variant_free(self, alt_real: str, alt_fake: str, own_reals: set[str]) -> bool:
+        r = canon(alt_real)
+        if not r or r in self.canon_all or not self.free(alt_real, alt_fake):
+            return False
+        if any(contains_bounded(alt_real, f) or contains_bounded(f, alt_real) for f in self.fakes):
+            return False
+        if any(
+            canon(self.reals[hit.pattern]) not in own_reals
+            for hit in self._index_reals.find(alt_real)
+        ):
+            return False
+        return not any(
+            canon(other) not in own_reals and contains_bounded(alt_real, other)
+            for other in self.reals
+        )
 
     def add(self, real: str, fake: str) -> None:
         self.canon_all.update({canon(real), canon(fake)})
