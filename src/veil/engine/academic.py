@@ -76,9 +76,7 @@ def class_term_forms(
     return out
 
 
-def _take_free(
-    entity: Entity | None, taken_real: set[str], taken_fake: set[str]
-) -> Entity | None:
+def _take_free(entity: Entity | None, taken_real: set[str], taken_fake: set[str]) -> Entity | None:
     if entity is None:
         return None
     pairs = [
