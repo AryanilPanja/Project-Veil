@@ -198,6 +198,8 @@ def test_ptrace_failure_is_reported(monkeypatch):
 
 
 def test_libc_load_failure_is_tolerated(monkeypatch):
+    monkeypatch.setattr(hardening.sys, "platform", "linux")  # the prctl path
+
     def fail(*_a, **_k):
         raise OSError("no libc")
 
@@ -207,6 +209,8 @@ def test_libc_load_failure_is_tolerated(monkeypatch):
 
 
 def test_prctl_failure_is_reported(monkeypatch):
+    monkeypatch.setattr(hardening.sys, "platform", "linux")  # the prctl path
+
     class FailingLibc:
         def prctl(self, *_args):
             return -1
