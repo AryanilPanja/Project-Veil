@@ -161,4 +161,55 @@ def test_academic_year_fails_closed_when_institution_kept_and_degree_disabled():
         assert engine.reverse("Her 3rd year was elsewhere.") == "Her 3rd year was elsewhere."
 
 
+def test_read_input_and_read_source_bound_regular_file_and_fifo(tmp_path, monkeypatch):
+    import os
+    import threading
+
+    import pytest
+
+    from veil import ui
+    from veil.errors import VeilError
+    from veil.persona import check as check_module
+
+    limit = 1024
+    monkeypatch.setattr(check_module, "MAX_BYTES", limit)
+
+    regular = tmp_path / "big.txt"
+    regular.write_bytes(b"a" * (limit + 1))
+
+    with pytest.raises(VeilError, match=f"larger than {limit} bytes"):
+        ui.read_input(regular, limit)
+    with pytest.raises(VeilError, match="too large"):
+        check_module.read_source(regular)
+
+    def _run_fifo_check(name: str, reader, pattern: str) -> None:
+        fifo = tmp_path / name
+        os.mkfifo(fifo)
+        stop = threading.Event()
+        waited_for_eof = False
+
+        def _writer() -> None:
+            nonlocal waited_for_eof
+            with fifo.open("wb") as handle:
+                handle.write(b"a" * (limit + 256))
+                handle.flush()
+                if not stop.wait(timeout=1.0):
+                    waited_for_eof = True
+
+        thread = threading.Thread(target=_writer, daemon=True)
+        thread.start()
+        try:
+            with pytest.raises(VeilError, match=pattern):
+                reader(fifo)
+        finally:
+            stop.set()
+            thread.join(timeout=2.0)
+        assert not thread.is_alive()
+        assert not waited_for_eof
+
+    _run_fifo_check("input.fifo", lambda p: ui.read_input(p, limit), f"larger than {limit} bytes")
+    _run_fifo_check("source.fifo", check_module.read_source, "too large")
+
+
+
 
