@@ -156,6 +156,9 @@ def swap_status(read: TextReader = _read_text) -> SwapStatus:
     try:
         text = read("/proc/swaps")
     except OSError:
+        if sys.platform == "darwin":
+            # macOS always encrypts its swap files (since 10.7; `sysctl vm.swapusage` says so).
+            return SwapStatus(active=1, unprotected=0)
         return SwapStatus(active=0, unprotected=0)
     active = unprotected = 0
     for line in text.splitlines()[1:]:  # first line is the header
