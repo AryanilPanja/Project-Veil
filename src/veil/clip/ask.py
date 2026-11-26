@@ -11,6 +11,7 @@ Askers:
 """
 
 import shutil
+import sys
 from collections.abc import Callable
 from enum import StrEnum
 
@@ -88,6 +89,23 @@ def deny_all(categories: dict[str, int], timeout: int) -> Decision:
     return Decision.DENY
 
 
+class DialogAsker:
+    """macOS: a `display dialog` with the three buttons (clip/macnotify.py)."""
+
+    def __init__(self, *, capture: Callable[..., proc.Captured] = proc.capture):
+        self._capture = capture
+
+    def __call__(self, categories: dict[str, int], timeout: int) -> Decision:
+        from veil.clip import macnotify
+
+        reply = macnotify.choose(
+            prompt_message(categories, timeout), _BUTTONS, timeout, capture=self._capture
+        )
+        return Decision.DENY if reply is None else Decision(reply)
+
+
 def detect(which: Callable[[str], str | None] = shutil.which) -> Asker:
+    if sys.platform == "darwin":
+        return DialogAsker()
     path = which("notify-send")
     return NotifyAsker(path) if path else deny_all

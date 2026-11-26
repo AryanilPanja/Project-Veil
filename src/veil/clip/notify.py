@@ -9,6 +9,7 @@ never changes the exit code.
 """
 
 import shutil
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -70,6 +71,10 @@ class NullNotifier:
 
 
 def detect(which: Callable[[str], str | None] = shutil.which) -> Notifier:
+    if sys.platform == "darwin":
+        from veil.clip.macnotify import OsascriptNotifier
+
+        return OsascriptNotifier()
     path = which("notify-send")
     return NotifySend(path) if path else NullNotifier()
 

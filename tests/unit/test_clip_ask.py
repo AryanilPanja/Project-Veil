@@ -37,6 +37,12 @@ assert HEALTH in YAML
 SENSITIVE_TEXT = "Jane Doe has asthma.\n"
 
 
+@pytest.fixture
+def linux(monkeypatch):
+    """The Linux code path, also when the tests run on macOS."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 def engine_with(health_line: str = HEALTH, **replace: str) -> Engine:
     text = YAML.replace(HEALTH, health_line)
     for old, new in replace.items():
@@ -470,7 +476,7 @@ class TestNotifyAsker:
     def test_missing_binary_denies(self, tmp_path):
         assert NotifyAsker(str(tmp_path / "nope"))({"h": 1}, 1) is Decision.DENY
 
-    def test_detect(self):
+    def test_detect(self, linux):
         assert isinstance(real_detect(lambda name: "/usr/bin/" + name), NotifyAsker)
         assert real_detect(lambda name: None) is deny_all
         assert deny_all({"h": 1}, 1) is Decision.DENY
