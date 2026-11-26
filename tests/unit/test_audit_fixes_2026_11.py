@@ -149,11 +149,15 @@ def test_academic_year_fails_closed_when_institution_kept_and_degree_disabled():
                 "  - institution: { real: XYZ Institute of Technology, fake: ABC University }",
                 "  - institution: { real: XYZ Institute of Technology, policy: KEEP }",
             )
-            .replace("    aliases:     { real: [XYZIT, XYZ-IT], fake: [ABCU, ABC-U] }", aliases_line)
+            .replace(
+                "    aliases:     { real: [XYZIT, XYZ-IT], fake: [ABCU, ABC-U] }", aliases_line
+            )
             .replace("    degree:\n      enabled: true", "    degree:\n      enabled: false")
         )
         engine = Engine(lexicon_from(text))
-        assert engine.forward("I am an MS student in 2nd year.") == "I am an MS student in 2nd year."
+        assert (
+            engine.forward("I am an MS student in 2nd year.") == "I am an MS student in 2nd year."
+        )
         assert (
             engine.forward("2nd year at XYZ Institute of Technology")
             == "2nd year at XYZ Institute of Technology"
@@ -211,5 +215,40 @@ def test_read_input_and_read_source_bound_regular_file_and_fifo(tmp_path, monkey
     _run_fifo_check("source.fifo", check_module.read_source, "too large")
 
 
+def test_check_bytes_rejects_flow_and_quoted_version_before_canary_insert(tmp_path):
+    import pytest
 
+    from tests.unit.test_matcher import FIXTURE
+    from veil.errors import Aborted
+    from veil.persona import edit
+    from veil.persona.check import check_bytes
 
+    base = FIXTURE.read_text(encoding="utf-8")
+    quoted = base.replace('version: "1"', '"version": "1"', 1)
+    flow = '{version: "1", person: {first_name: {real: Jane, fake: Alex}}}\n'
+    for bad in (quoted, flow):
+        report = check_bytes(bad.encode("utf-8"))
+        assert any(f.code == "E004" and f.path == "version" for f in report.errors), report
+
+    problems: list[str] = []
+
+    def runner(_cmd, session_dir):
+        (session_dir / edit.FILE_NAME).write_text(quoted, encoding="utf-8")
+        return 0
+
+    def choose(problem: str) -> str:
+        problems.append(problem)
+        return "d"
+
+    with pytest.raises(Aborted):
+        edit._edit_loop(
+            session=tmp_path,
+            start=base.encode("utf-8"),
+            saved_text=base.encode("utf-8"),
+            editor="nano",
+            allow_unknown_editor=False,
+            runner=runner,
+            choose=choose,
+            keep_draft=lambda _data: None,
+        )
+    assert problems == ["the edited persona has 1 error(s)"]
