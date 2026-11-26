@@ -122,3 +122,103 @@ def test_install_mode_flags_accepted(tmp_path, flag, capsys):
         == ExitCode.OK
     )
     capsys.readouterr()
+
+
+def test_install_adds_session_start_hook_and_notice_blocks(tmp_path, capsys):
+    code = cli.main(["agent-guard", "install", "--project", str(tmp_path)])
+    assert code == ExitCode.OK
+    capsys.readouterr()
+
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    session_hooks = settings["hooks"]["SessionStart"]
+    assert session_hooks[0]["hooks"][0]["command"] == "veil agent-guard hook session-start"
+
+    for name in ("CLAUDE.md", "AGENTS.md"):
+        doc = tmp_path / name
+        assert doc.is_file()
+        text = doc.read_text(encoding="utf-8")
+        assert "<!-- veil:begin -->" in text
+        assert "<!-- veil:end -->" in text
+        inner = text.split("<!-- veil:begin -->", 1)[1].split("<!-- veil:end -->", 1)[0].strip()
+        assert 1 <= len(inner.splitlines()) <= 8
+        assert "pseudonym" in inner.lower()
+        assert "tampering" in inner.lower()
+
+
+def test_install_updates_marked_block_in_place_preserving_surrounding_text(tmp_path, capsys):
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text(
+        "# Project Rules\n\nKeep tests green.\n\n"
+        "<!-- veil:begin -->\nstale notice\n<!-- veil:end -->\n\n"
+        "## Extra Section\nDo not erase me.\n",
+        encoding="utf-8",
+    )
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("# Agents\n\nFollow style.\n", encoding="utf-8")
+
+    assert cli.main(["agent-guard", "install", "--project", str(tmp_path)]) == ExitCode.OK
+    capsys.readouterr()
+
+    updated_claude = claude_md.read_text(encoding="utf-8")
+    assert updated_claude.count("<!-- veil:begin -->") == 1
+    assert updated_claude.count("<!-- veil:end -->") == 1
+    assert "stale notice" not in updated_claude
+    assert updated_claude.startswith("# Project Rules\n\nKeep tests green.\n\n<!-- veil:begin -->")
+    assert updated_claude.endswith("<!-- veil:end -->\n\n## Extra Section\nDo not erase me.\n")
+
+    updated_agents = agents_md.read_text(encoding="utf-8")
+    assert updated_agents.startswith("# Agents\n\nFollow style.\n")
+    assert "<!-- veil:begin -->" in updated_agents
+    assert "<!-- veil:end -->" in updated_agents
+
+
+def test_install_print_does_not_write_notice_files(tmp_path, capsys):
+    assert (
+        cli.main(["agent-guard", "install", "--project", str(tmp_path), "--print"]) == ExitCode.OK
+    )
+    parsed = json.loads(capsys.readouterr().out)
+    assert "SessionStart" in parsed["hooks"]
+    assert not (tmp_path / "CLAUDE.md").exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_uninstall_removes_hooks_and_notice_blocks(tmp_path, capsys):
+    # Fresh install -> uninstall removes veil hooks and veil-only markdown files
+    assert cli.main(["agent-guard", "install", "--project", str(tmp_path)]) == ExitCode.OK
+    capsys.readouterr()
+
+    settings_path = tmp_path / ".claude" / "settings.json"
+    data = json.loads(settings_path.read_text(encoding="utf-8"))
+    data["customKeep"] = "yes"
+    data["hooks"]["PreToolUse"].append(
+        {"matcher": "Bash", "hooks": [{"type": "command", "command": "custom-hook"}]}
+    )
+    settings_path.write_text(json.dumps(data), encoding="utf-8")
+
+    assert cli.main(["agent-guard", "uninstall", "--project", str(tmp_path)]) == ExitCode.OK
+    capsys.readouterr()
+
+    after = json.loads(settings_path.read_text(encoding="utf-8"))
+    assert after["customKeep"] == "yes"
+    assert "SessionStart" not in after["hooks"]
+    assert "PostToolUse" not in after["hooks"]
+    assert "Stop" not in after["hooks"]
+    assert [h["hooks"][0]["command"] for h in after["hooks"]["PreToolUse"]] == ["custom-hook"]
+    assert not (tmp_path / "CLAUDE.md").exists()
+    assert not (tmp_path / "AGENTS.md").exists()
+
+    # Existing content in CLAUDE.md / AGENTS.md is preserved cleanly
+    (tmp_path / "CLAUDE.md").write_text("# My Repo\n\nNotes here.\n", encoding="utf-8")
+    (tmp_path / "AGENTS.md").write_text("# Custom Agents\n", encoding="utf-8")
+    assert cli.main(["agent-guard", "install", "--project", str(tmp_path)]) == ExitCode.OK
+    assert cli.main(["agent-guard", "uninstall", "--project", str(tmp_path)]) == ExitCode.OK
+    capsys.readouterr()
+
+    assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "# My Repo\n\nNotes here.\n"
+    assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "# Custom Agents\n"
+
+
+def test_uninstall_on_uninstalled_project_is_noop(tmp_path, capsys):
+    assert cli.main(["agent-guard", "uninstall", "--project", str(tmp_path)]) == ExitCode.OK
+    capsys.readouterr()
+    assert not (tmp_path / ".claude").exists()
