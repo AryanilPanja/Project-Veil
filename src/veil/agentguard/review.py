@@ -119,6 +119,15 @@ def _is_ci_file(path: str) -> bool:
     return p.name in (".gitlab-ci.yml", "Jenkinsfile", ".pre-commit-config.yaml")
 
 
+def _is_env_cred_file(path: str) -> bool:
+    if _is_ci_file(path):
+        return True
+    p = PurePosixPath(path)
+    if p.suffix.lower() in (".sh", ".bash", ".zsh", ".ksh", ".mk"):
+        return True
+    return p.name in ("Makefile", "makefile", "GNUmakefile")
+
+
 def _is_guard_file(path: str) -> bool:
     p = PurePosixPath(path)
     if p.parts[0] == ".claude":
@@ -134,13 +143,41 @@ def _is_guard_file(path: str) -> bool:
 
 _ML_EVAL_RE = re.compile(r"(eval|metric|benchmark|score|leaderboard)", re.IGNORECASE)
 _TRAIN_PATH_RE = re.compile(r"(train|finetune|fine_tune)", re.IGNORECASE)
+_ML_IMPORT_RE = re.compile(
+    r"(?:^\s*(?:import|from)\s+(?:torch|sklearn|scikit_learn|numpy|jax|tensorflow|tf|"
+    r"datasets|transformers|keras|scipy|lightgbm|xgboost|catboost|evaluate|torchmetrics)\b|"
+    r"\b(?:torch|sklearn|numpy|jax|tensorflow|datasets)\.)",
+    re.MULTILINE,
+)
 
 
-def _is_ml_eval_file(path: str) -> bool:
+def _has_ml_import(path: str, *, repo: Path | None, diff: FileDiff | None) -> bool:
+    if diff is not None:
+        for hunk in diff.hunks:
+            for dl in hunk.lines:
+                if _ML_IMPORT_RE.search(dl.text):
+                    return True
+    if repo is not None and (diff is None or not diff.is_deleted):
+        full = repo / path
+        try:
+            if full.is_file() and full.stat().st_size <= _MAX_UNTRACKED_BYTES:
+                content = full.read_text(encoding="utf-8", errors="replace")
+                if _ML_IMPORT_RE.search(content):
+                    return True
+        except OSError:
+            pass
+    return False
+
+
+def _is_ml_eval_file(path: str, *, repo: Path | None = None, diff: FileDiff | None = None) -> bool:
     if _is_test_file(path) or _is_guard_file(path):
         return False
     p = PurePosixPath(path)
-    return bool(_ML_EVAL_RE.search(p.name))
+    if any(part.lower() in ("eval", "evals", "metric", "metrics") for part in p.parts[:-1]):
+        return True
+    if not _ML_EVAL_RE.search(p.name):
+        return False
+    return _has_ml_import(path, repo=repo, diff=diff)
 
 
 # ── Git helpers ──────────────────────────────────────────────────────────────
@@ -446,9 +483,16 @@ _LITERAL_RE = re.compile(
     r"""(?<![A-Za-z0-9_])(?:True|False|None|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"""
 )
 _SKIP_RE = re.compile(
-    r"(?:pytest\.skip|@pytest\.mark\.skip|@pytest\.mark\.skipif|@pytest\.mark\.xfail|"
-    r"pytest\.xfail|unittest\.skip|@unittest\.skip|@unittest\.skipIf|"
-    r"@unittest\.skipUnless|\b(?:it|test|describe)\.skip\s*\()"
+    r"(?:pytest\.skip\b|@pytest\.mark\.skip\b|@pytest\.mark\.skipif\b|@pytest\.mark\.xfail\b|"
+    r"pytest\.xfail\b|unittest\.skip\b|@unittest\.skip\b|@unittest\.skipIf\b|"
+    r"@unittest\.skipUnless\b|\b(?:it|test|describe)\.skip\s*\()"
+)
+_SKIPIF_DECORATOR_RE = re.compile(
+    r"(?:@pytest\.mark\.skipif|@unittest\.skipIf|@unittest\.skipUnless)\s*\("
+)
+_PLATFORM_COND_RE = re.compile(
+    r"\b(?:sys\.platform|sys\.version_info|sys\.implementation|os\.name|"
+    r"platform\.(?:system|machine|release|version|python_version|platform))\b"
 )
 _TAUTOLOGY_RE = re.compile(r"^\s*assert\s+(?:True|1|not\s+False)\s*(?:#.*)?$")
 _MOCK_RE = re.compile(
@@ -518,10 +562,12 @@ _ML_METRIC_FN_RE = re.compile(
     r"(?:eval|metric|score|accuracy|f1|precision|recall|auc|bleu|rouge)", re.IGNORECASE
 )
 
-_SEC_CRED_RE = re.compile(
-    r"""(?:~/\.ssh|~/\.aws|~/\.gnupg|/\.ssh/|/\.aws/|Library/Keychains|"""
-    r"""security\s+find-|secret-tool|"""
-    r"""os\.(?:environ(?:\.get)?|getenv)\s*[\[(]\s*["'][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z0-9_]*["']|"""
+_SEC_CRED_PATH_RE = re.compile(
+    r"(?:~/\.ssh|~/\.aws|~/\.gnupg|/\.ssh/|/\.aws/|Library/Keychains|"
+    r"security\s+find-|secret-tool)"
+)
+_SEC_CRED_ENV_RE = re.compile(
+    r"""(?:os\.(?:environ(?:\.get)?|getenv)\s*[\[(]\s*["'][A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z0-9_]*["']|"""
     r"""\$\{?[A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD)[A-Z0-9_]*\}?)"""
 )
 _SEC_SHELL_TRUE_RE = re.compile(r"\bshell\s*=\s*True\b")
@@ -549,7 +595,7 @@ def scan_diffs(diffs: list[FileDiff], *, repo: Path | None = None) -> list[Findi
             continue
         findings.extend(_check_guard_tampering(diff))
         findings.extend(_check_tests_family(diff, repo=repo))
-        findings.extend(_check_weakened_checks(diff))
+        findings.extend(_check_weakened_checks(diff, repo=repo))
         findings.extend(_check_ml_integrity(diff, repo=repo))
         findings.extend(_check_security_family(diff))
     return _dedupe_findings(findings)
@@ -645,7 +691,11 @@ def _check_tests_family(diff: FileDiff, *, repo: Path | None) -> list[Finding]:
                     added_asserts += 1
                 hunk_add_asserts.append(dl)
 
-            if not is_comment and _SKIP_RE.search(dl.text):
+            if (
+                not is_comment
+                and _SKIP_RE.search(dl.text)
+                and not _is_allowed_platform_skip(dl.text)
+            ):
                 out.append(
                     Finding(
                         rule_id="test-skipped",
@@ -708,8 +758,8 @@ def _check_tests_family(diff: FileDiff, *, repo: Path | None) -> list[Finding]:
         # Detect changed expected literals in paired assertions
         if is_test and not diff.is_new and hunk_rem_asserts and hunk_add_asserts:
             for rem, add in zip(hunk_rem_asserts, hunk_add_asserts, strict=False):
-                rem_lits = _LITERAL_RE.findall(rem.text)
-                add_lits = _LITERAL_RE.findall(add.text)
+                rem_lits = _LITERAL_RE.findall(_assert_expr_text(rem.text))
+                add_lits = _LITERAL_RE.findall(_assert_expr_text(add.text))
                 if rem_lits != add_lits and (rem_lits or add_lits):
                     out.append(
                         Finding(
@@ -798,10 +848,27 @@ def _is_pass_only_body(body: list[ast.stmt]) -> bool:
     )
 
 
-def _check_weakened_checks(diff: FileDiff) -> list[Finding]:
+def _is_allowed_platform_skip(line: str) -> bool:
+    return bool(_SKIPIF_DECORATOR_RE.search(line) and _PLATFORM_COND_RE.search(line))
+
+
+def _assert_expr_text(line: str) -> str:
+    stripped = line.strip()
+    if stripped.startswith("assert "):
+        try:
+            tree = ast.parse(stripped)
+        except SyntaxError:
+            return line
+        if len(tree.body) == 1 and isinstance(tree.body[0], ast.Assert):
+            return ast.unparse(tree.body[0].test)
+    return line
+
+
+def _check_weakened_checks(diff: FileDiff, *, repo: Path | None = None) -> list[Finding]:
     out: list[Finding] = []
     path = diff.display_path
     is_test = _is_test_file(path)
+    is_eval = _is_ml_eval_file(path, repo=repo, diff=diff)
     is_ci = _is_ci_file(path)
     is_pyproject = PurePosixPath(path).name == "pyproject.toml"
     is_agentguard = _is_guard_file(path)
@@ -939,18 +1006,20 @@ def _check_weakened_checks(diff: FileDiff) -> list[Finding]:
                         )
                     )
 
-        for key, new_val, ln in new_tols:
-            if key in old_tols and new_val > old_tols[key]:
-                out.append(
-                    Finding(
-                        rule_id="check-tolerance-raised",
-                        severity=Severity.HIGH,
-                        family="weakened-checks",
-                        path=path,
-                        line=ln,
-                        reason=f"tolerance/timeout '{key}' raised ({old_tols[key]} -> {new_val})",
+        if is_test or is_eval:
+            for key, new_val, ln in new_tols:
+                if key in old_tols and new_val > old_tols[key]:
+                    reason = f"tolerance/timeout '{key}' raised ({old_tols[key]} -> {new_val})"
+                    out.append(
+                        Finding(
+                            rule_id="check-tolerance-raised",
+                            severity=Severity.HIGH,
+                            family="weakened-checks",
+                            path=path,
+                            line=ln,
+                            reason=reason,
+                        )
                     )
-                )
 
     if is_ci and not diff.is_deleted and ci_steps_removed > ci_steps_added:
         out.append(
@@ -975,7 +1044,7 @@ def _check_ml_integrity(diff: FileDiff, *, repo: Path | None) -> list[Finding]:
     if is_test or is_guard:
         return out
 
-    if _is_ml_eval_file(path):
+    if _is_ml_eval_file(path, repo=repo, diff=diff):
         out.append(
             Finding(
                 rule_id="ml-eval-edited",
@@ -1100,7 +1169,7 @@ def _ast_constant_metrics(repo: Path, diff: FileDiff) -> list[Finding]:
     if not added_lines:
         return []
 
-    in_eval_file = _is_ml_eval_file(path)
+    in_eval_file = _is_ml_eval_file(path, repo=repo, diff=diff)
     out: list[Finding] = []
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1153,6 +1222,7 @@ def _check_security_family(diff: FileDiff) -> list[Finding]:
 
     filename = PurePosixPath(path).name
     is_dep_file = filename in ("pyproject.toml", "uv.lock", "package.json")
+    is_env_cred = _is_env_cred_file(path)
     in_dep_section = False
 
     for hunk in diff.hunks:
@@ -1185,7 +1255,9 @@ def _check_security_family(diff: FileDiff) -> list[Finding]:
             if is_comment:
                 continue
 
-            if _SEC_CRED_RE.search(dl.text):
+            if _SEC_CRED_PATH_RE.search(dl.text) or (
+                is_env_cred and _SEC_CRED_ENV_RE.search(dl.text)
+            ):
                 out.append(
                     Finding(
                         rule_id="sec-credential-access",

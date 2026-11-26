@@ -154,7 +154,6 @@ def test_review_med_only_over_mocking_exits_1(monkeypatch, tmp_path, capsys):
 def test_review_weakened_checks_family(monkeypatch, tmp_path, capsys):
     repo = _make_repo(tmp_path)
     (repo / "src" / "app.py").write_text(
-        "timeout = 1\n"
         "def compute(x):\n"
         "    try:\n"
         "        return x * 2  # noqa: E501\n"
@@ -162,11 +161,18 @@ def test_review_weakened_checks_family(monkeypatch, tmp_path, capsys):
         "        pass\n",
         encoding="utf-8",
     )
-    _git(repo, "add", "src/app.py")
+    (repo / "tests" / "test_app.py").write_text(
+        "from src.app import compute\n\n"
+        "timeout = 1\n"
+        "def test_compute():\n"
+        "    assert compute(3) == 6\n"
+        "    assert compute(0) == 0\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "src/app.py", "tests/test_app.py")
     _git(repo, "commit", "-q", "-m", "baseline timeout")
 
     (repo / "src" / "app.py").write_text(
-        "timeout = 60\n"
         "def compute(x):\n"
         "    try:\n"
         "        return x * 2  # type: ignore\n"
@@ -176,6 +182,7 @@ def test_review_weakened_checks_family(monkeypatch, tmp_path, capsys):
     )
     (repo / "tests" / "test_app.py").write_text(
         "import sys\nfrom src.app import compute\n\n"
+        "timeout = 60\n"
         "def test_compute():\n"
         "    sys.exit(0)\n"
         "    assert compute(3) == 6\n"
@@ -212,7 +219,7 @@ def test_review_weakened_checks_family(monkeypatch, tmp_path, capsys):
 def test_review_ml_integrity_family(monkeypatch, tmp_path, capsys):
     repo = _make_repo(tmp_path)
     (repo / "src" / "eval_model.py").write_text(
-        "def evaluate_accuracy(preds, labels):\n    return 1.0\n",
+        "import torch\n\ndef evaluate_accuracy(preds, labels):\n    return 1.0\n",
         encoding="utf-8",
     )
     (repo / "src" / "train.py").write_text(
@@ -409,3 +416,74 @@ def test_review_except_regex_no_redos():
     elapsed = time.perf_counter() - t0
     assert elapsed < 0.5
     assert not any(f.rule_id == "check-swallowed-exception" for f in findings)
+
+
+def test_review_false_positives_do_not_trigger_high_findings(monkeypatch, tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    (repo / "src" / "app.py").write_text(
+        "timeout = 5\ndef compute(x):\n    return x * 2\n", encoding="utf-8"
+    )
+    _git(repo, "add", "src/app.py")
+    _git(repo, "commit", "-q", "-m", "baseline non-test timeout")
+
+    # 1. os.environ["OPENAI_API_KEY"] in app code + timeout=5->10 in non-test code
+    (repo / "src" / "app.py").write_text(
+        'import os\ntimeout = 10\ndef get_key():\n    return os.environ["OPENAI_API_KEY"]\n',
+        encoding="utf-8",
+    )
+    # 2. @pytest.mark.skipif(sys.platform ...) + adding message to assert
+    (repo / "tests" / "test_app.py").write_text(
+        "import sys\nimport pytest\nfrom src.app import compute\n\n"
+        '@pytest.mark.skipif(sys.platform == "win32", reason="posix only")\n'
+        "def test_compute():\n"
+        '    assert compute(3) == 6, "compute should double 3"\n'
+        "    assert compute(0) == 0\n",
+        encoding="utf-8",
+    )
+    # 3. Non-ML files named *metric*/*eval*/*score*
+    (repo / "src" / "score_parser.py").write_text(
+        "def parse_score(raw):\n    return int(raw)\n", encoding="utf-8"
+    )
+    (repo / "src" / "metrics_formatter.py").write_text(
+        "def format_table(rows):\n    return str(rows)\n", encoding="utf-8"
+    )
+
+    monkeypatch.chdir(repo)
+    code = cli.main(["agent-guard", "review", "--base", "HEAD", "--json"])
+    assert code == ExitCode.OK
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    assert findings == []
+
+
+def test_review_still_flags_true_positives_for_scoped_rules(monkeypatch, tmp_path, capsys):
+    repo = _make_repo(tmp_path)
+    # Secret env access in shell script, CI yaml, and Makefile still flagged
+    (repo / "deploy.sh").write_text('echo "$OPENAI_API_KEY"\n', encoding="utf-8")
+    (repo / "Makefile").write_text("run:\n\techo $$API_SECRET_TOKEN\n", encoding="utf-8")
+    (repo / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  test:\n    steps:\n      - name: Run\n        run: echo $API_SECRET_TOKEN\n",
+        encoding="utf-8",
+    )
+    # Non-platform skipif still flagged
+    (repo / "tests" / "test_app.py").write_text(
+        "import pytest\nfrom src.app import compute\n\n"
+        '@pytest.mark.skipif(True, reason="disabled")\n'
+        "def test_compute():\n"
+        "    assert compute(3) == 6\n"
+        "    assert compute(0) == 0\n",
+        encoding="utf-8",
+    )
+    # Eval path under eval/ or metrics/ still flagged as ml-eval-edited even without ML import
+    (repo / "eval").mkdir()
+    (repo / "eval" / "score_runner.py").write_text(
+        "def run_eval():\n    return {'acc': 0.9}\n", encoding="utf-8"
+    )
+
+    monkeypatch.chdir(repo)
+    code = cli.main(["agent-guard", "review", "--base", "HEAD", "--json"])
+    assert code == ExitCode.HIGH_FINDINGS
+    findings = json.loads(capsys.readouterr().out)["findings"]
+    sec_paths = {f["path"] for f in findings if f["rule_id"] == "sec-credential-access"}
+    assert {"deploy.sh", "Makefile", ".github/workflows/ci.yml"} <= sec_paths
+    rules = {f["rule_id"] for f in findings}
+    assert {"test-skipped", "ml-eval-edited"} <= rules

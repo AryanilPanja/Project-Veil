@@ -799,9 +799,9 @@ def _check_segment(
 
     # 16. `pytest` / `python -m pytest`
     if cmd in ("pytest", "py.test"):
-        return (_check_pytest(args), False)
+        return (_check_pytest(args, cwd), False)
     if cmd.startswith("python") and len(args) >= 2 and args[0] == "-m" and args[1] == "pytest":
-        return (_check_pytest(args[2:]), False)
+        return (_check_pytest(args[2:], cwd), False)
 
     return (PreDecision(allowed=True), False)
 
@@ -1461,31 +1461,84 @@ def _check_git(args: list[str], cwd: Path, config: GuardConfig) -> PreDecision:
     return PreDecision(allowed=True)
 
 
-def _check_pytest(args: list[str]) -> PreDecision:
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\b")
+_TEST_CLASS_RE = re.compile(r"^\s*class\s+(Test[A-Za-z0-9_]+)\b")
+_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _git_removed_test_names(cwd: Path) -> set[str]:
+    base_cmd = [
+        _GIT_BIN,
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "--no-pager",
+        "diff",
+        "-U0",
+    ]
+    proc: subprocess.CompletedProcess[str] | None = None
+    for ref in ("HEAD", "--cached"):
+        try:
+            res = subprocess.run(  # noqa: S603 - fixed git command
+                [*base_cmd, ref],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=_GIT_HEAD_TIMEOUT,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+        if res.returncode == 0:
+            proc = res
+            break
+    if proc is None or not proc.stdout:
+        return set()
+
+    removed: set[str] = set()
+    added: set[str] = set()
+    for line in proc.stdout.splitlines():
+        if line.startswith("-") and not line.startswith("---"):
+            body = line[1:]
+            if m := (_TEST_DEF_RE.match(body) or _TEST_CLASS_RE.match(body)):
+                removed.add(m.group(1))
+        elif line.startswith("+") and not line.startswith("+++"):
+            body = line[1:]
+            if m := (_TEST_DEF_RE.match(body) or _TEST_CLASS_RE.match(body)):
+                added.add(m.group(1))
+    return removed - added
+
+
+def _check_pytest(args: list[str], cwd: Path) -> PreDecision:
     idx = 0
+    k_exprs: list[str] = []
     while idx < len(args):
         tok = args[idx]
         if tok == "--deselect" or tok.startswith("--deselect="):
             return PreDecision(allowed=False, rule_id="pytest-tamper", target="pytest --deselect")
-        if tok == "-p" and idx + 1 < len(args):
-            if args[idx + 1].startswith("no:"):
-                return PreDecision(
-                    allowed=False, rule_id="pytest-tamper", target=f"pytest -p {args[idx + 1]}"
-                )
-            idx += 2
-            continue
-        if tok.startswith("-pno:"):
-            return PreDecision(allowed=False, rule_id="pytest-tamper", target=f"pytest {tok}")
         if tok == "-k" and idx + 1 < len(args):
-            if _NOT_WORD_RE.search(args[idx + 1]):
-                return PreDecision(
-                    allowed=False, rule_id="pytest-tamper", target='pytest -k "not ..."'
-                )
+            k_exprs.append(args[idx + 1])
             idx += 2
             continue
-        if tok.startswith("-k") and len(tok) > 2 and _NOT_WORD_RE.search(tok[2:]):
-            return PreDecision(allowed=False, rule_id="pytest-tamper", target='pytest -k "not ..."')
+        if tok.startswith("-k="):
+            k_exprs.append(tok[3:])
+        elif tok.startswith("-k") and len(tok) > 2:
+            k_exprs.append(tok[2:])
         idx += 1
+
+    not_exprs = [expr for expr in k_exprs if _NOT_WORD_RE.search(expr)]
+    if not_exprs:
+        removed_tests = _git_removed_test_names(cwd)
+        if removed_tests:
+            for expr in not_exprs:
+                idents = set(_IDENT_RE.findall(expr)) - {"not", "and", "or"}
+                if idents & removed_tests:
+                    return PreDecision(
+                        allowed=False, rule_id="pytest-tamper", target='pytest -k "not ..."'
+                    )
     return PreDecision(allowed=True)
 
 

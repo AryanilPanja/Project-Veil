@@ -275,10 +275,7 @@ def test_hook_pre_allows_unknown_tool_without_protected_paths(monkeypatch, tmp_p
         "git reset --hard HEAD~1",
         "rm -rf /tmp/outside-dir",
         "rm -rf ../escape-cwd",
-        "pytest -p no:cov",
         "pytest --deselect tests/test_app.py::test_add",
-        'pytest -k "not slow"',
-        'uv run python -m pytest -k "not slow"',
         # Bug 3: newline / CR / comment-newline separators
         "echo hi\nrm tests/test_app.py",
         "echo hi\rrm tests/test_app.py",
@@ -441,6 +438,10 @@ def test_hook_pre_blocks_dangerous_bash(monkeypatch, tmp_path, capsys, command):
         "veil status",
         "veil agent-guard review",
         "find tests -name '*.py'",
+        "pytest -p no:cov",
+        "uv run python -m pytest -q -p no:testmon tests/test_app.py",
+        'pytest -k "not slow"',
+        'uv run python -m pytest -k "not slow"',
     ],
 )
 def test_hook_pre_allows_safe_bash(monkeypatch, tmp_path, capsys, command):
@@ -455,6 +456,27 @@ def test_hook_pre_allows_safe_bash(monkeypatch, tmp_path, capsys, command):
     assert code == ExitCode.OK
     captured = capsys.readouterr()
     assert captured.out == ""
+
+
+def test_hook_pre_blocks_pytest_k_excluding_removed_test(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    # Remove test_add from tests/test_app.py
+    (repo / "tests" / "test_app.py").write_text(
+        "from src.app import add\n\ndef test_other():\n    assert add(0, 0) == 0\n",
+        encoding="utf-8",
+    )
+    payload = {
+        "session_id": "sess-pytest-k",
+        "tool_name": "Bash",
+        "tool_input": {"command": 'pytest -k "not test_add"'},
+        "cwd": str(repo),
+    }
+    code = _run_hook(monkeypatch, ["agent-guard", "hook", "pre"], payload)
+    assert code == 2
+    _assert_deny_json(capsys)
 
 
 @pytest.mark.parametrize("tool_name", ["Read", "Glob", "Grep", "Edit", "Write"])
