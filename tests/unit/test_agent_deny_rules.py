@@ -1,22 +1,19 @@
-"""The agent deny rules in .claude/settings.json keep the rules CLAUDE.md promises (P0.5, Q11, M2.2).
+"""The agent guard (contrib/agent-guard/claude-settings.json) keeps the rules veil promises.
 
-`.claude/` is git-ignored (local-only agent config), so a CI checkout has no settings file: these
-tests skip there. Locally a missing file is a failure, so the rules can't silently disappear.
+The template is tracked so a fresh clone and CI test the same rules; `.claude/` stays
+git-ignored and holds the installed copy (P0.5, Q11, M2.2).
 """
 
 import json
-import os
 from pathlib import Path
 
 import pytest
 
-SETTINGS = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+SETTINGS = Path(__file__).resolve().parents[2] / "contrib" / "agent-guard" / "claude-settings.json"
 
 
 @pytest.fixture(scope="module")
 def deny() -> list[str]:
-    if not SETTINGS.exists() and os.environ.get("CI"):
-        pytest.skip(".claude/settings.json is local-only (git-ignored); not in a CI checkout")
     return json.loads(SETTINGS.read_text(encoding="utf-8"))["permissions"]["deny"]
 
 
@@ -41,6 +38,13 @@ def deny() -> list[str]:
         "Bash(*pkill*)", "Bash(*killall*)",
         # tools that type into the owner's windows
         "Bash(*paste_spike*)",
+        # macOS: the clipboard, the Keychain item, AppleScript and the LaunchAgent
+        "Bash(*pbpaste*)", "Bash(*pbcopy*)", "Bash(*osascript*)",
+        "Bash(*security find-generic-password*)", "Bash(*security dump-keychain*)",
+        "Bash(*launchctl*veil*)",
+        # the key and persona files themselves
+        "Read(~/Library/Keychains/**)", "Read(~/.config/veil/**)",
+        "Read(~/Library/Application Support/veil/**)", "Read(**/*.age)",
     ],
 )  # fmt: skip
 def test_rule_present(deny, rule):
@@ -49,3 +53,14 @@ def test_rule_present(deny, rule):
 
 def test_no_duplicates(deny):
     assert len(deny) == len(set(deny))
+
+
+def test_shell_commands_run_sandboxed_with_no_escape_hatch():
+    sandbox = json.loads(SETTINGS.read_text(encoding="utf-8"))["sandbox"]
+    assert sandbox["enabled"] is True
+    assert sandbox["allowUnsandboxedCommands"] is False
+
+
+def test_bypass_mode_is_disabled():
+    permissions = json.loads(SETTINGS.read_text(encoding="utf-8"))["permissions"]
+    assert permissions["disableBypassPermissionsMode"] == "disable"
