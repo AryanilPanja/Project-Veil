@@ -1,15 +1,20 @@
-"""Clipboard I/O (M2.1, ADR-0023): read plain text only, write plain text only.
+"""Clipboard I/O (M2.1, ADR-0023): classify offers, read text or images, write sanitized only.
 
 Reading classifies what the clipboard offers before asking for any data:
 - TEXT: a plain-text type is offered; its bytes are read as UTF-8. Rich types offered alongside
   (HTML, RTF) are never requested.
-- RICH_ONLY: only rich text (HTML, RTF, a file list…): nothing to sanitize as plain text.
-- NON_TEXT: something else only (an image, a file): not handled in v0.1 (ADR-0014).
+- IMAGE: an image type is offered without plain text. PNG and JPEG are read for metadata stripping;
+  on macOS non-PNG/JPEG images (TIFF, HEIC, GIF, etc.) are converted to PNG via ImageIO and then
+  stripped, while on Linux non-PNG/JPEG images stay skipped.
+- RICH_ONLY: only rich text without a plain alternative. HTML (`text/html`, `public.html`) and
+  RTF (`text/rtf`, `application/rtf`, `public.rtf`) are converted to plain text and sanitized to
+  plain text only; file lists and other rich types stay skipped.
+- NON_TEXT: something else only (e.g. a file URL or binary blob): left unchanged.
 - EMPTY: nothing is copied.
 
-Writing offers exactly one type, `text/plain` (wl-copy may add its plain-text aliases such as
-UTF8_STRING), so a site can't paste a rich, unsanitized version. Writing a clipboard replaces
-every type the previous owner offered.
+Writing offers exactly one type (`text/plain` for text, `image/png` or `image/jpeg` for images),
+dropping every other type the previous owner offered so unsanitized rich forms or metadata never
+survive.
 
 Backends: the NSPasteboard (clip/pasteboard.py) on macOS; wl-clipboard on Wayland; xsel on X11
 (basic fallback: xsel can't list types, so it only ever sees TEXT or EMPTY). `detect()` picks one
@@ -24,8 +29,10 @@ from dataclasses import dataclass
 from enum import Enum, StrEnum
 from typing import Protocol
 
-from veil.clip import proc, recent
-from veil.errors import ClipboardError
+from veil.clip import proc, recent, richtext
+from veil.clip.imagemeta import MAX_IMAGE_BYTES, ImageFormat
+from veil.clip.richtext import RichFormat
+from veil.errors import ClipboardError, ImageError
 
 MAX_CLIP_BYTES = 10 * 1024 * 1024
 TIMEOUT_SECONDS = 5.0
@@ -35,9 +42,20 @@ WRITE_TYPE = "text/plain"
 PLAIN_TYPES = ("text/plain;charset=utf-8", "utf8_string", "text/plain", "string", "text")
 # Rich or structured text that is not plain text: present without a plain type → RICH_ONLY.
 RICH_TYPES = frozenset({
-    "application/rtf", "application/x-rtf", "application/x-qt-richtext", "application/xhtml+xml",
+    "application/rtf", "application/x-rtf", "application/x-apple-rtfd",
+    "application/x-qt-richtext", "application/xhtml+xml",
     "x-special/gnome-copied-files", "application/x-kde4-urilist", "compound_text",
 })  # fmt: skip
+IMAGE_MIME_TYPES = {
+    "image/png": ImageFormat.PNG,
+    "image/jpeg": ImageFormat.JPEG,
+}
+CONVERTIBLE_RICH_TYPES = (
+    ("text/html", RichFormat.HTML),
+    ("text/rtf", RichFormat.RTF),
+    ("application/rtf", RichFormat.RTF),
+    ("application/x-rtf", RichFormat.RTF),
+)
 # KDE password managers mark copied secrets with this type; clipboard histories skip them.
 PASSWORD_HINT = "x-kde-passwordmanagerhint"  # noqa: S105 - a MIME type name, not a secret
 _EMPTY_MARKERS = (b"nothing is copied", b"no selection")
@@ -50,6 +68,7 @@ class Selection(StrEnum):
 
 class Kind(Enum):
     TEXT = "text"
+    IMAGE = "image"
     RICH_ONLY = "rich-only"
     NON_TEXT = "non-text"
     EMPTY = "empty"
@@ -58,16 +77,22 @@ class Kind(Enum):
 @dataclass(frozen=True)
 class ClipContent:
     kind: Kind
-    text: str | None = None  # only for TEXT
+    text: str | None = None  # for TEXT, and convertible HTML/RTF RICH_ONLY
     secret: bool = False  # the source marked it as a password (x-kde-passwordManagerHint)
     type_count: int = 0
     plain_only: bool = False  # TEXT offered only as plain-text types (as veil writes it)
+    image: bytes | None = None  # only for IMAGE when readable by the backend
+    image_format: ImageFormat | None = None
+    image_converted: bool = False  # True when transcoded (e.g. TIFF/HEIC/GIF -> PNG on macOS)
 
-    def __repr__(self) -> str:  # never the text
+    def __repr__(self) -> str:  # never the text or image bytes
         size = "None" if self.text is None else f"<{len(self.text)} chars>"
+        img = ""
+        if self.image is not None:
+            img = f", image=<{len(self.image)} bytes {self.image_format}>"
         return (
             f"ClipContent(kind={self.kind.name}, text={size}, secret={self.secret}, "
-            f"type_count={self.type_count})"
+            f"type_count={self.type_count}{img})"
         )
 
     __str__ = __repr__
@@ -79,6 +104,8 @@ class Clipboard(Protocol):
     def read(self, selection: Selection = Selection.CLIPBOARD) -> ClipContent: ...
 
     def write_text(self, text: str) -> None: ...
+
+    def write_image(self, data: bytes, fmt: ImageFormat) -> None: ...
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None: ...
 
@@ -96,9 +123,36 @@ def classify(types: Sequence[str]) -> tuple[Kind, str | None]:
     content = [t for t in offered if not _is_meta(t)]
     if not content:
         return Kind.EMPTY, None
+    if any(t.startswith("image/") for t in content):
+        return Kind.IMAGE, None
     if any(t.startswith("text/") or t in RICH_TYPES for t in content):
         return Kind.RICH_ONLY, None
     return Kind.NON_TEXT, None
+
+
+def pick_image(types: Sequence[str]) -> str | None:
+    """Preferred offered image type (PNG, then JPEG, then any other image/*)."""
+    offered = {_norm(t): t for t in types if t.strip()}
+    for preferred in ("image/png", "image/jpeg"):
+        if preferred in offered:
+            return offered[preferred]
+    for norm, original in offered.items():
+        if norm.startswith("image/") and not _is_meta(norm):
+            return original
+    return None
+
+
+def pick_rich(types: Sequence[str]) -> tuple[str, RichFormat] | None:
+    """Preferred convertible rich-text type (HTML or RTF) from an offered type list."""
+    offered = {_norm(t): t for t in types if t.strip()}
+    for norm, fmt in CONVERTIBLE_RICH_TYPES:
+        if norm in offered:
+            return offered[norm], fmt
+    return None
+
+
+def image_mime(fmt: ImageFormat) -> str:
+    return "image/png" if fmt is ImageFormat.PNG else "image/jpeg"
 
 
 class WaylandClipboard:
@@ -113,10 +167,11 @@ class WaylandClipboard:
         feed: Feed = proc.feed,
         timeout: float = TIMEOUT_SECONDS,
         limit: int = MAX_CLIP_BYTES,
+        image_limit: int = MAX_IMAGE_BYTES,
     ) -> None:
         self._paste, self._copy = wl_paste, wl_copy
         self._capture, self._feed = capture, feed
-        self._timeout, self._limit = timeout, limit
+        self._timeout, self._limit, self._image_limit = timeout, limit, image_limit
 
     def read(self, selection: Selection = Selection.CLIPBOARD) -> ClipContent:
         listed = self._capture(
@@ -131,30 +186,80 @@ class WaylandClipboard:
         types = _decode_types(listed.stdout)
         kind, plain = classify(types)
         secret = any(_norm(t) == PASSWORD_HINT for t in types)
-        if plain is None:
-            return ClipContent(kind, secret=secret, type_count=len(types))
+
+        if kind is Kind.TEXT and plain is not None:
+            raw = self._read_type(selection, plain, no_newline=True, limit=self._limit)
+            if raw is None:
+                return ClipContent(Kind.EMPTY)
+            return ClipContent(
+                Kind.TEXT,
+                _decode(raw),
+                secret=secret,
+                type_count=len(types),
+                plain_only=plain_only(types),
+            )
+
+        if kind is Kind.IMAGE:
+            img_type = pick_image(types)
+            if secret or img_type is None or _norm(img_type) not in IMAGE_MIME_TYPES:
+                return ClipContent(Kind.IMAGE, secret=secret, type_count=len(types))
+            raw = self._read_type(selection, img_type, no_newline=False, limit=self._image_limit)
+            if raw is None:
+                return ClipContent(Kind.EMPTY)
+            return ClipContent(
+                Kind.IMAGE,
+                secret=secret,
+                type_count=len(types),
+                image=raw,
+                image_format=IMAGE_MIME_TYPES[_norm(img_type)],
+            )
+
+        if kind is Kind.RICH_ONLY:
+            rich = pick_rich(types)
+            if secret or rich is None:
+                return ClipContent(Kind.RICH_ONLY, secret=secret, type_count=len(types))
+            rich_type, rich_fmt = rich
+            raw = self._read_type(selection, rich_type, no_newline=True, limit=self._limit)
+            if raw is None:
+                return ClipContent(Kind.EMPTY)
+            return ClipContent(
+                Kind.RICH_ONLY,
+                richtext.to_text(raw, rich_fmt),
+                secret=secret,
+                type_count=len(types),
+                plain_only=False,
+            )
+
+        return ClipContent(kind, secret=secret, type_count=len(types))
+
+    def _read_type(
+        self, selection: Selection, mime: str, *, no_newline: bool, limit: int
+    ) -> bytes | None:
+        flag = ["--no-newline"] if no_newline else []
         data = self._capture(
-            [self._paste, *_primary(selection), "--no-newline", "--type", plain],
+            [self._paste, *_primary(selection), *flag, "--type", mime],
             timeout=self._timeout,
-            limit=self._limit,
+            limit=limit,
         )
         if data.returncode != 0:
             if _says_empty(data.stderr):  # the owner changed in between
-                return ClipContent(Kind.EMPTY)
+                return None
             raise ClipboardError(f"wl-paste failed (exit {data.returncode})")
-        return ClipContent(
-            Kind.TEXT,
-            _decode(data.stdout),
-            secret=secret,
-            type_count=len(types),
-            plain_only=plain_only(types),
-        )
+        return data.stdout
 
     def write_text(self, text: str) -> None:
         recent.remember(text)  # before the write: the copy watcher must know it's veil's own
         code = self._feed(
             [self._copy, "--type", WRITE_TYPE], text.encode("utf-8"), timeout=self._timeout
         )
+        if code != 0:
+            raise ClipboardError(f"wl-copy failed (exit {code})")
+
+    def write_image(self, data: bytes, fmt: ImageFormat) -> None:
+        if len(data) > self._image_limit:
+            raise ImageError(f"the clipboard image is larger than {self._image_limit} bytes")
+        recent.remember_bytes(data)
+        code = self._feed([self._copy, "--type", image_mime(fmt)], data, timeout=self._timeout)
         if code != 0:
             raise ClipboardError(f"wl-copy failed (exit {code})")
 
@@ -201,6 +306,9 @@ class XselClipboard:
         )
         if code != 0:
             raise ClipboardError(f"xsel failed (exit {code})")
+
+    def write_image(self, data: bytes, fmt: ImageFormat) -> None:
+        raise ClipboardError("xsel only supports plain text")
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         code = self._feed(

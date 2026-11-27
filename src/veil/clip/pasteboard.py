@@ -21,13 +21,27 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from veil.clip import recent
-from veil.clip.io import MAX_CLIP_BYTES, ClipContent, Kind, Selection, classify, plain_only
-from veil.errors import ClipboardError
+from veil.clip import recent, richtext
+from veil.clip.imagemeta import MAX_IMAGE_BYTES, ImageFormat
+from veil.clip.io import (
+    IMAGE_MIME_TYPES,
+    MAX_CLIP_BYTES,
+    ClipContent,
+    Kind,
+    Selection,
+    classify,
+    pick_image,
+    pick_rich,
+    plain_only,
+)
+from veil.errors import ClipboardError, ImageError
 
 _LIBOBJC = "/usr/lib/libobjc.A.dylib"
 _APPKIT = "/System/Library/Frameworks/AppKit.framework/AppKit"
+_CORE_FOUNDATION = "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+_IMAGE_IO = "/System/Library/Frameworks/ImageIO.framework/ImageIO"
 _NSUTF8_STRING_ENCODING = 4
+_CF_UTF8 = 0x08000100
 
 CONCEALED = "org.nspasteboard.ConcealedType"
 TRANSIENT = "org.nspasteboard.TransientType"
@@ -36,17 +50,30 @@ SOURCE = "org.nspasteboard.source"
 MARKERS = frozenset({CONCEALED, TRANSIENT, AUTO_GENERATED, SOURCE})
 WRITE_UTI = "public.utf8-plain-text"
 SOURCE_NAME = "veil"
+_IMAGE_WRITE_UTIS = {
+    ImageFormat.PNG: "public.png",
+    ImageFormat.JPEG: "public.jpeg",
+}
 
 # Apple UTI (or legacy pasteboard type) -> the name `io.classify` knows. Anything else passes
-# through unchanged, so an image (public.png, public.tiff) ends up NON_TEXT.
+# through unchanged, so non-image/non-rich types (public.file-url) end up NON_TEXT.
 _UTI_NAMES = {
     "public.utf8-plain-text": "text/plain;charset=utf-8",
     "public.plain-text": "text/plain",
     "NSStringPboardType": "string",
     "public.rtf": "application/rtf",
-    "com.apple.flat-rtfd": "application/rtf",
-    "public.rtfd": "application/rtf",
+    "com.apple.flat-rtfd": "application/x-apple-rtfd",
+    "public.rtfd": "application/x-apple-rtfd",
     "public.html": "text/html",
+    "public.png": "image/png",
+    "public.jpeg": "image/jpeg",
+    "public.tiff": "image/tiff",
+    "public.heic": "image/heic",
+    "public.heif": "image/heif",
+    "com.compuserve.gif": "image/gif",
+    "public.webp": "image/webp",
+    "com.microsoft.bmp": "image/bmp",
+    "NeXT TIFF v4.0 pasteboard type": "image/tiff",
 }
 
 
@@ -97,6 +124,83 @@ def _runtime() -> tuple[ctypes.CDLL, int]:
     if send is None:
         raise ClipboardError("the macOS pasteboard could not be loaded")
     return objc, send
+
+
+@functools.cache
+def _imageio() -> tuple[ctypes.CDLL, ctypes.CDLL]:
+    if sys.platform != "darwin":
+        raise ClipboardError("the macOS pasteboard is only available on macOS")
+    try:
+        cf = ctypes.CDLL(_CORE_FOUNDATION)
+        iio = ctypes.CDLL(_IMAGE_IO)
+        cf.CFDataCreate.argtypes = (_ptr, ctypes.c_char_p, ctypes.c_long)
+        cf.CFDataCreate.restype = _ptr
+        cf.CFDataCreateMutable.argtypes = (_ptr, ctypes.c_long)
+        cf.CFDataCreateMutable.restype = _ptr
+        cf.CFDataGetLength.argtypes = (_ptr,)
+        cf.CFDataGetLength.restype = ctypes.c_long
+        cf.CFDataGetBytePtr.argtypes = (_ptr,)
+        cf.CFDataGetBytePtr.restype = _ptr
+        cf.CFStringCreateWithCString.argtypes = (_ptr, ctypes.c_char_p, ctypes.c_uint32)
+        cf.CFStringCreateWithCString.restype = _ptr
+        cf.CFRelease.argtypes = (_ptr,)
+        cf.CFRelease.restype = None
+        iio.CGImageSourceCreateWithData.argtypes = (_ptr, _ptr)
+        iio.CGImageSourceCreateWithData.restype = _ptr
+        iio.CGImageSourceCreateImageAtIndex.argtypes = (_ptr, ctypes.c_ulong, _ptr)
+        iio.CGImageSourceCreateImageAtIndex.restype = _ptr
+        iio.CGImageDestinationCreateWithData.argtypes = (_ptr, _ptr, ctypes.c_ulong, _ptr)
+        iio.CGImageDestinationCreateWithData.restype = _ptr
+        iio.CGImageDestinationAddImage.argtypes = (_ptr, _ptr, _ptr)
+        iio.CGImageDestinationAddImage.restype = None
+        iio.CGImageDestinationFinalize.argtypes = (_ptr,)
+        iio.CGImageDestinationFinalize.restype = ctypes.c_bool
+    except (OSError, AttributeError):
+        raise ClipboardError("macOS ImageIO could not be loaded") from None
+    return cf, iio
+
+
+def _convert_to_png(raw: bytes, *, limit: int = MAX_IMAGE_BYTES) -> bytes:
+    """Convert a non-PNG/JPEG raster image (TIFF, HEIC, GIF, etc.) to PNG via ImageIO."""
+    if not raw:
+        raise ImageError("malformed or unsupported image")
+    if len(raw) > limit:
+        raise ImageError(f"the clipboard image is larger than {limit} bytes")
+    cf, iio = _imageio()
+    src_data = src = image = dst_data = uti = dst = None
+    try:
+        src_data = cf.CFDataCreate(None, raw, len(raw))
+        if not src_data:
+            raise ImageError("could not read image data")
+        src = iio.CGImageSourceCreateWithData(src_data, None)
+        if not src:
+            raise ImageError("malformed or unsupported image")
+        image = iio.CGImageSourceCreateImageAtIndex(src, 0, None)
+        if not image:
+            raise ImageError("malformed or unsupported image")
+        dst_data = cf.CFDataCreateMutable(None, 0)
+        if not dst_data:
+            raise ImageError("could not allocate PNG buffer")
+        uti = cf.CFStringCreateWithCString(None, b"public.png", _CF_UTF8)
+        if not uti:
+            raise ImageError("could not create image type")
+        dst = iio.CGImageDestinationCreateWithData(dst_data, uti, 1, None)
+        if not dst:
+            raise ImageError("could not create PNG encoder")
+        iio.CGImageDestinationAddImage(dst, image, None)
+        if not iio.CGImageDestinationFinalize(dst):
+            raise ImageError("could not encode image as PNG")
+        length = cf.CFDataGetLength(dst_data)
+        if length <= 0 or length > limit:
+            raise ImageError("converted image is invalid or too large")
+        ptr = cf.CFDataGetBytePtr(dst_data)
+        if not ptr:
+            raise ImageError("could not read converted PNG")
+        return ctypes.string_at(ptr, length)
+    finally:
+        for obj in (dst, uti, dst_data, image, src, src_data):
+            if obj:
+                cf.CFRelease(obj)
 
 
 @functools.cache
@@ -197,11 +301,46 @@ def _types(board: int) -> list[str]:
     return found
 
 
+def _read_data(board: int, uti: str, *, limit: int, too_large: Exception) -> bytes | None:
+    ns_data = _msg(board, "dataForType:", _ns_string(uti), argtypes=(_ptr,))
+    if not ns_data:
+        return None
+    size = _msg(ns_data, "length", restype=ctypes.c_ulong)
+    if size > limit:
+        raise too_large
+    if size == 0:
+        return b""
+    ptr = _msg(ns_data, "bytes", restype=ctypes.c_void_p)
+    return ctypes.string_at(ptr, size) if ptr else b""
+
+
 def _set(board: int, uti: str, text: str) -> None:
     ok = _msg(
         board,
         "setString:forType:",
         _ns_string(text),
+        _ns_string(uti),
+        restype=ctypes.c_bool,
+        argtypes=(_ptr, _ptr),
+    )
+    if not ok:
+        raise ClipboardError("the macOS pasteboard rejected the write")
+
+
+def _set_data(board: int, uti: str, data: bytes) -> None:
+    ns_data = _msg(
+        _class("NSData"),
+        "dataWithBytes:length:",
+        data,
+        len(data),
+        argtypes=(ctypes.c_char_p, ctypes.c_ulong),
+    )
+    if not ns_data:
+        raise ClipboardError("the macOS pasteboard rejected the image")
+    ok = _msg(
+        board,
+        "setData:forType:",
+        ns_data,
         _ns_string(uti),
         restype=ctypes.c_bool,
         argtypes=(_ptr, _ptr),
@@ -225,8 +364,9 @@ def change_count() -> int:
 class PasteboardClipboard:
     name = "pasteboard"
 
-    def __init__(self, *, limit: int = MAX_CLIP_BYTES) -> None:
+    def __init__(self, *, limit: int = MAX_CLIP_BYTES, image_limit: int = MAX_IMAGE_BYTES) -> None:
         self._limit = limit
+        self._image_limit = image_limit
 
     def read(self, selection: Selection = Selection.CLIPBOARD) -> ClipContent:
         if selection is Selection.PRIMARY:
@@ -236,28 +376,85 @@ class PasteboardClipboard:
             mapped = map_types(_types(board))
             secret = mapped.secret and not _written_by_veil(board)
             kind, plain = classify(mapped.names)
-            if plain is None:
-                return ClipContent(kind, secret=secret, type_count=mapped.total)
-            ns_type = _ns_string(mapped.originals[plain])
-            text = _msg(board, "stringForType:", ns_type, argtypes=(_ptr,))
-            if not text:  # the owner changed in between, or the type has no string form
-                return ClipContent(Kind.EMPTY)
-            size = _msg(
-                text,
-                "lengthOfBytesUsingEncoding:",
-                _NSUTF8_STRING_ENCODING,
-                restype=ctypes.c_ulong,
-                argtypes=(ctypes.c_ulong,),
-            )
-            if size > self._limit:
-                raise ClipboardError("the clipboard text is too large")
-            return ClipContent(
-                Kind.TEXT,
-                _copy_utf8(text, size),
-                secret=secret,
-                type_count=mapped.total,
-                plain_only=plain_only(mapped.names),
-            )
+
+            if kind is Kind.TEXT and plain is not None:
+                ns_type = _ns_string(mapped.originals[plain])
+                text = _msg(board, "stringForType:", ns_type, argtypes=(_ptr,))
+                if not text:  # the owner changed in between, or the type has no string form
+                    return ClipContent(Kind.EMPTY)
+                size = _msg(
+                    text,
+                    "lengthOfBytesUsingEncoding:",
+                    _NSUTF8_STRING_ENCODING,
+                    restype=ctypes.c_ulong,
+                    argtypes=(ctypes.c_ulong,),
+                )
+                if size > self._limit:
+                    raise ClipboardError("the clipboard text is too large")
+                return ClipContent(
+                    Kind.TEXT,
+                    _copy_utf8(text, size),
+                    secret=secret,
+                    type_count=mapped.total,
+                    plain_only=plain_only(mapped.names),
+                )
+
+            if kind is Kind.IMAGE:
+                img_mime = pick_image(mapped.names)
+                if secret or img_mime is None:
+                    return ClipContent(Kind.IMAGE, secret=secret, type_count=mapped.total)
+                uti = mapped.originals[img_mime]
+                raw = _read_data(
+                    board,
+                    uti,
+                    limit=self._image_limit,
+                    too_large=ImageError(
+                        f"the clipboard image is larger than {self._image_limit} bytes"
+                    ),
+                )
+                if raw is None:
+                    return ClipContent(Kind.EMPTY)
+                if img_mime in IMAGE_MIME_TYPES:
+                    return ClipContent(
+                        Kind.IMAGE,
+                        secret=secret,
+                        type_count=mapped.total,
+                        image=raw,
+                        image_format=IMAGE_MIME_TYPES[img_mime],
+                    )
+                png = _convert_to_png(raw, limit=self._image_limit)
+                return ClipContent(
+                    Kind.IMAGE,
+                    secret=secret,
+                    type_count=mapped.total,
+                    image=png,
+                    image_format=ImageFormat.PNG,
+                    image_converted=True,
+                )
+
+            if kind is Kind.RICH_ONLY:
+                rich = pick_rich(mapped.names)
+                if secret or rich is None:
+                    return ClipContent(Kind.RICH_ONLY, secret=secret, type_count=mapped.total)
+                rich_mime, rich_fmt = rich
+                uti = mapped.originals[rich_mime]
+                raw = _read_data(
+                    board,
+                    uti,
+                    limit=self._limit,
+                    too_large=ClipboardError("the clipboard text is too large"),
+                )
+                if raw is None:
+                    return ClipContent(Kind.EMPTY)
+                return ClipContent(
+                    Kind.RICH_ONLY,
+                    richtext.to_text(raw, rich_fmt),
+                    secret=secret,
+                    type_count=mapped.total,
+                    plain_only=False,
+                )
+
+            return ClipContent(kind, secret=secret, type_count=mapped.total)
 
     def write_text(self, text: str) -> None:
         recent.remember(text)  # before the write: the copy watcher must know it's veil's own
@@ -271,6 +468,20 @@ class PasteboardClipboard:
             _set(board, CONCEALED, "")
             _set(board, SOURCE, SOURCE_NAME)
             _set(board, WRITE_UTI, text)
+
+    def write_image(self, data: bytes, fmt: ImageFormat) -> None:
+        if len(data) > self._image_limit:
+            raise ImageError(f"the clipboard image is larger than {self._image_limit} bytes")
+        uti = _IMAGE_WRITE_UTIS[fmt]
+        recent.remember_bytes(data)
+        with _pool():
+            board = _pasteboard()
+            _msg(board, "clearContents", restype=ctypes.c_long)
+            _set(board, TRANSIENT, "")
+            _set(board, AUTO_GENERATED, "")
+            _set(board, CONCEALED, "")
+            _set(board, SOURCE, SOURCE_NAME)
+            _set_data(board, uti, data)
 
     def clear(self, selection: Selection = Selection.CLIPBOARD) -> None:
         if selection is Selection.PRIMARY:

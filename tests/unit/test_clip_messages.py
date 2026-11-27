@@ -165,6 +165,31 @@ SNAPSHOTS = [
             N,
         ),
     ),
+    # image metadata stripped / no metadata
+    (
+        Outcome(Action.SANITIZE, image_removed=3),
+        ["veil: sanitized: removed 3 metadata blocks from the image"],
+        Message(
+            "veil: image sanitized", "Removed 3 metadata blocks from the image. Ready to paste.", N
+        ),
+    ),
+    (
+        Outcome(Action.SANITIZE, image_removed=1),
+        ["veil: sanitized: removed 1 metadata block from the image"],
+        Message(
+            "veil: image sanitized", "Removed 1 metadata block from the image. Ready to paste.", N
+        ),
+    ),
+    (
+        Outcome(Action.SANITIZE, image_removed=0),
+        ["veil: sanitized: converted image to clean PNG"],
+        Message("veil: image sanitized", "Converted image to clean PNG. Ready to paste.", N),
+    ),
+    (
+        Outcome(Action.SANITIZE, Skip.NO_METADATA),
+        ["veil: clipboard NOT sanitized: image has no metadata; left unchanged"],
+        Message("veil: image unchanged", "Image has no metadata. Left unchanged.", N),
+    ),
 ]
 
 
@@ -369,12 +394,12 @@ class TestCliNotifications:
         assert notifications[-1].summary == "veil: 6 restored"
 
     def test_skip_notifies_critical(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"text/html": b"<b>x</b>"}
+        board.offers[Selection.CLIPBOARD] = {"x-special/gnome-copied-files": b"copy\nfile:///tmp/x"}
         assert run(capsys, "sanitize")[0] == ExitCode.OK
         assert notifications == [messages.notification(Outcome(Action.SANITIZE, Skip.RICH_ONLY))]
 
     def test_no_notify_flag(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
+        board.offers[Selection.CLIPBOARD] = {"application/octet-stream": b"x"}
         code, _, err = run(capsys, "sanitize", "--no-notify")
         assert code == ExitCode.OK
         assert notifications == []
@@ -384,7 +409,7 @@ class TestCliNotifications:
         from veil.clip import notify
 
         monkeypatch.setattr(notify, "detect", lambda: NotifySend("/n", feed=Feed(rc=1)))
-        board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
+        board.offers[Selection.CLIPBOARD] = {"application/octet-stream": b"x"}
         assert run(capsys, "sanitize")[0] == ExitCode.OK
 
     def test_errors_notify_critical(self, board, capsys, notifications):

@@ -249,7 +249,17 @@ class TestCommands:
 
     def test_skips_do_not_forget(self, engine):
         spy = Spy()
-        commands.sanitize(FakeBoard({"image/png": b"x"}), Loader(engine), forget=spy)
+        commands.sanitize(FakeBoard({"application/octet-stream": b"x"}), Loader(engine), forget=spy)
+        assert spy.originals == []
+
+    def test_image_strip_does_not_forget(self, engine):
+        from tests.unit.test_imagemeta import build_png
+
+        png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+        spy = Spy()
+        outcome = commands.sanitize(FakeBoard({"image/png": png}), Loader(engine), forget=spy)
+        assert outcome.image_removed == 1
+        assert outcome.history is None
         assert spy.originals == []
 
     def test_errors_do_not_forget(self, engine):
