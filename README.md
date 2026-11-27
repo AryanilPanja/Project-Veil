@@ -62,7 +62,7 @@ same code with small platform backends ([`docs/macos.md`](docs/macos.md)).
 | Linux, other Wayland desktops (Sway, Hyprland…) | 🟡 should work with a Secret Service keyring or passphrase mode | 🟡 likely (they support `wl-clipboard`); shortcuts by hand | 🟡 should work |
 | Linux, X11 session | 🟡 core should work | ❌ not supported (needs `xclip`/`xsel` support) | 🟡 should work |
 | Linux without systemd / no `/run/user` tmpfs | ❌ `persona edit` refuses (no safe place for plaintext) | ❌ | ❌ |
-| macOS (tested on 27, Apple silicon) | ✅ tested (key in the login Keychain, plaintext on a RAM disk) | ✅ sanitize, restore and veil ON (hotkeys through Shortcuts.app, printed by `veil install-shortcuts`); no sanitize-then-paste yet | ❓ not built yet |
+| macOS (tested on 27, Apple silicon) | ✅ tested (key in the login Keychain, plaintext on a RAM disk) | ✅ sanitize, restore and veil ON (hotkeys through Shortcuts.app, printed by `veil install-shortcuts`); no sanitize-then-paste yet | 🟡 should work (no platform-specific parts); untested |
 | Windows | ❌ not supported yet (uses Unix-only file locking and permissions) | ❌ | ❌ |
 | WSL | ❌ untested; no desktop keyring by default | ❌ | ❌ |
 
