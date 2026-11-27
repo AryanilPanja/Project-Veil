@@ -34,10 +34,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
-from veil.clip import recent
+from veil.clip import imagemeta, recent
 from veil.clip.ask import Asker, Decision, deny_all
 from veil.clip.history import Forget, Forgetter
-from veil.clip.io import Clipboard, Kind, Selection
+from veil.clip.io import Clipboard, ClipContent, Kind, Selection
 from veil.engine.matcher import Engine, RawMatch
 from veil.persona.policy import Policy
 from veil.timing import STAGES
@@ -61,6 +61,7 @@ class Skip(Enum):
     NOTHING_SELECTED = "nothing selected"
     NON_TEXT = "no plain text (an image or a file)"
     RICH_ONLY = "no plain text (rich text only)"
+    NO_METADATA = "image has no metadata"
     SECRET = "marked as a password by a password manager"  # noqa: S105 - a message
     DENIED = "sensitive detail withheld"
     OWN = "veil's own write"  # the copy watcher saw veil's result (or a restore) come back
@@ -88,6 +89,7 @@ class Outcome:
     history: Forget | None = None  # removing the original from the clipboard history (M2.6)
     residue: dict[str, int] = field(default_factory=dict)  # restore: fake-name leftovers (M2.7)
     pasted: Pasted | None = None  # `clip paste` only (ADR-0030)
+    image_removed: int | None = None  # metadata blocks stripped from an image (0 = converted only)
 
     @property
     def changed(self) -> bool:
@@ -129,7 +131,7 @@ def from_selection(
 def restore(board: Clipboard, load: EngineLoader) -> Outcome:
     content = board.read(Selection.CLIPBOARD)
     STAGES.mark("read")
-    skipped = _skip(content.kind, content.secret, Selection.CLIPBOARD)
+    skipped = _skip(content, Selection.CLIPBOARD, Action.RESTORE)
     if skipped is not None:
         return Outcome(Action.RESTORE, skipped)
     engine = load()
@@ -154,13 +156,27 @@ def _forward(
 ) -> Outcome:
     content = board.read(source)
     STAGES.mark("read")
-    skipped = _skip(content.kind, content.secret, source)
+    skipped = _skip(content, source, action)
     if skipped is not None:
         return Outcome(action, skipped)
+    if content.kind is Kind.IMAGE:
+        image = content.image
+        fmt = content.image_format
+        if image is None or fmt is None:
+            return Outcome(action, Skip.NON_TEXT)
+        if auto and recent.consume_bytes(image):
+            return Outcome(action, Skip.OWN)
+        result = imagemeta.strip(image, fmt)
+        STAGES.mark("strip")
+        if result.removed == 0 and not content.image_converted:
+            return Outcome(action, Skip.NO_METADATA)
+        board.write_image(result.data, fmt)
+        STAGES.mark("write")
+        return Outcome(action, image_removed=result.removed)
     if auto and recent.consume(content.text or ""):
         return Outcome(action, Skip.OWN)
     engine = load()
-    text = content.text or ""  # TEXT always carries text
+    text = content.text or ""  # TEXT and convertible RICH_ONLY carry text
 
     hits = engine.sensitive(text)
     to_ask = [h for h in hits if h.form.entity.policy is Policy.ASK]
@@ -235,13 +251,15 @@ def _categories(hits: list[RawMatch]) -> dict[str, int]:
     return counts
 
 
-def _skip(kind: Kind, secret: bool, source: Selection) -> Skip | None:
-    if kind is Kind.EMPTY:
+def _skip(content: ClipContent, source: Selection, action: Action) -> Skip | None:
+    if content.kind is Kind.EMPTY:
         return Skip.NOTHING_SELECTED if source is Selection.PRIMARY else Skip.EMPTY
-    if kind is Kind.NON_TEXT:
-        return Skip.NON_TEXT
-    if kind is Kind.RICH_ONLY:
-        return Skip.RICH_ONLY
-    if secret:
+    if content.secret:
         return Skip.SECRET
+    if content.kind is Kind.NON_TEXT:
+        return Skip.NON_TEXT
+    if content.kind is Kind.IMAGE and (action is Action.RESTORE or content.image is None):
+        return Skip.NON_TEXT
+    if content.kind is Kind.RICH_ONLY and (action is Action.RESTORE or content.text is None):
+        return Skip.RICH_ONLY
     return None

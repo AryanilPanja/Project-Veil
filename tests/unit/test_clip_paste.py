@@ -123,16 +123,34 @@ class TestCli:
         run(capsys, "paste", "--terminal")
         assert portal_keyboard.pressed == [CTRL_SHIFT_V]
 
-    @pytest.mark.parametrize("offer", [{"text/html": b"<b>x</b>"}, {"image/png": b"x"}, None])
+    @pytest.mark.parametrize(
+        "offer",
+        [
+            {"x-special/gnome-copied-files": b"copy\nfile:///tmp/x"},
+            {"application/octet-stream": b"x"},
+            None,
+        ],
+    )
     def test_skips_are_not_pasted(self, board, capsys, portal_keyboard, offer):
         board.offers[Selection.CLIPBOARD] = offer
         assert run(capsys, "paste")[0] == ExitCode.OK
         assert portal_keyboard.pressed == []
 
     def test_rich_only_warns(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"text/html": b"<b>x</b>"}
+        board.offers[Selection.CLIPBOARD] = {"x-special/gnome-copied-files": b"copy\nfile:///tmp/x"}
         run(capsys, "paste")
         assert notifications[-1].urgency is Urgency.CRITICAL
+
+    def test_stripped_image_is_pasted(self, board, capsys, portal_keyboard, notifications):
+        from tests.unit.test_imagemeta import build_png
+
+        png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+        board.offers[Selection.CLIPBOARD] = {"image/png": png}
+        code, _, err = run(capsys, "paste")
+        assert code == ExitCode.OK
+        assert portal_keyboard.pressed == [CTRL_V]
+        assert "removed 1 metadata block from the image" in err
+        assert notifications[-1].body == "Removed 1 metadata block from the image. Pasted."
 
     def test_deny_is_not_pasted(self, board, capsys, portal_keyboard):
         board.offers[Selection.CLIPBOARD] = {"text/plain": SENSITIVE.encode()}

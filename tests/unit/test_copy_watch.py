@@ -62,6 +62,12 @@ class TestRecent:
         assert recent.consume("x", now=1001.0)
         assert not recent.consume("x", now=1001.0)
 
+    def test_remember_bytes_is_separate_from_text(self):
+        recent.remember_bytes(b"hello", now=1000.0)
+        assert not recent.consume("hello", now=1001.0)
+        assert recent.consume_bytes(b"hello", now=1001.0)
+        assert not recent.consume_bytes(b"hello", now=1002.0)
+
     def test_consume_never_raises(self, monkeypatch):
         def broken():
             raise OSError("gone")
@@ -271,9 +277,24 @@ class TestAuto:
         commands.sanitize(board, Loader(engine))
         assert commands.sanitize(board, Loader(engine)).skipped is None
 
+    def test_own_image_write_is_skipped_before_stripping(self):
+        from tests.unit.test_imagemeta import build_png
+
+        png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+        board = FakeBoard({"image/png": png})
+        load = Loader(error=AssertionError("must not load"))
+        first = commands.sanitize(board, load, auto=True)
+        assert first == Outcome(Action.SANITIZE, image_removed=1)
+        second = commands.sanitize(board, load, auto=True)
+        assert second.skipped is Skip.OWN
+        assert len(board.image_writes) == 1
+        assert load.calls == 0
+
 
 class TestQuiet:
-    @pytest.mark.parametrize("skip", [Skip.EMPTY, Skip.NON_TEXT, Skip.SECRET, Skip.OWN])
+    @pytest.mark.parametrize(
+        "skip", [Skip.EMPTY, Skip.NON_TEXT, Skip.NO_METADATA, Skip.SECRET, Skip.OWN]
+    )
     def test_silent_skips(self, skip):
         assert not messages.worth_notifying(Outcome(Action.SANITIZE, skip), auto=True)
 
@@ -283,6 +304,10 @@ class TestQuiet:
 
     def test_nothing_replaced_is_silent(self):
         assert not messages.worth_notifying(Outcome(Action.SANITIZE), auto=True)
+
+    def test_image_strip_notifies_and_clean_conversion_is_silent(self):
+        assert messages.worth_notifying(Outcome(Action.SANITIZE, image_removed=2), auto=True)
+        assert not messages.worth_notifying(Outcome(Action.SANITIZE, image_removed=0), auto=True)
 
     def test_copied_answer_with_fakes_is_silent(self):
         # Copying an AI answer while ON: full of fake forms, nothing real to replace.
@@ -330,14 +355,27 @@ class TestCli:
         assert board.types() == ["text/plain"]  # the rich version is still dropped
         assert "already contained" in err  # stderr (the service log) still says it
 
-    def test_auto_image_is_silent(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
+    def test_auto_clean_image_is_silent(self, board, capsys, notifications):
+        from tests.unit.test_imagemeta import build_png
+
+        board.offers[Selection.CLIPBOARD] = {"image/png": build_png()[0]}
         run(capsys, "sanitize", "--auto")
         assert notifications == []
         assert board.writes == []
+        assert board.image_writes == []
+
+    def test_auto_image_strips_and_notifies(self, board, capsys, notifications):
+        from tests.unit.test_imagemeta import build_png
+
+        png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+        board.offers[Selection.CLIPBOARD] = {"image/png": png}
+        run(capsys, "sanitize", "--auto")
+        assert notifications[-1].summary == "veil: image sanitized"
+        assert "Removed 1 metadata block" in notifications[-1].body
+        assert len(board.image_writes) == 1
 
     def test_auto_rich_only_warns(self, board, capsys, notifications):
-        board.offers[Selection.CLIPBOARD] = {"text/html": b"<b>x</b>"}
+        board.offers[Selection.CLIPBOARD] = {"x-special/gnome-copied-files": b"copy\nfile:///tmp/x"}
         run(capsys, "sanitize", "--auto")
         assert notifications[-1].urgency is Urgency.CRITICAL
 

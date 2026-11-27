@@ -66,6 +66,44 @@ def test_copy_runs_once_and_own_write_is_skipped():
     assert script.copies == 1
 
 
+def test_image_write_bumps_change_count_and_is_ignored():
+    from tests.helpers.fakeclip import FakeBoard
+    from tests.unit.test_imagemeta import build_png
+    from veil.clip import commands
+
+    png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+    board = FakeBoard({"image/png": png})
+    counter = [10]
+    outcomes = []
+
+    def on_copy():
+        outcomes.append(commands.sanitize(board, lambda: pytest.fail("must not load"), auto=True))
+        counter[0] = 12  # pasteboard.write_image bumps changeCount
+
+    polls = iter([10, 11, 12, 12])  # initial 10; poll 11 (copy) -> re-read 12; poll 12; poll 12
+    ticks = 0
+
+    def next_count():
+        nonlocal ticks
+        ticks += 1
+        if ticks == 3:
+            return counter[0]
+        return next(polls)
+
+    with contextlib.suppress(StopIteration):
+        macwatch.run(
+            next_count,
+            on_copy,
+            lambda: True,
+            idle=lambda: 0.0,
+            sleep=lambda _s: None,
+            monotonic=lambda: 0.0,
+        )
+    assert len(outcomes) == 1
+    assert outcomes[0].image_removed == 1
+    assert len(board.image_writes) == 1
+
+
 def test_polls_fast_while_active_and_slow_when_idle():
     active = Script([1, 1, 1])
     active.run()

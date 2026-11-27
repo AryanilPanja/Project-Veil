@@ -93,7 +93,7 @@ PASTE_LINES = {
     Pasted.FAILED: "veil: not pasted (the desktop portal failed); press Ctrl+V yourself",
 }
 # Nothing to sanitize: the copy watcher stays quiet about these (ADR-0031).
-QUIET_SKIPS = frozenset({Skip.EMPTY, Skip.NON_TEXT, Skip.SECRET, Skip.OWN})
+QUIET_SKIPS = frozenset({Skip.EMPTY, Skip.NON_TEXT, Skip.NO_METADATA, Skip.SECRET, Skip.OWN})
 
 
 def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
@@ -106,6 +106,8 @@ def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
         return False
     if outcome.skipped is not None:
         return True  # rich text only, a Deny: the user must know
+    if outcome.image_removed is not None:
+        return bool(outcome.image_removed)
     # Fake forms already in the text are normal here (copying an AI answer): only worth a word
     # when something was also replaced (the stderr line always says it).
     return bool(outcome.total or outcome.asked or outcome.generalized) or (
@@ -121,6 +123,17 @@ def notification(outcome: Outcome) -> Message:
         )
     if outcome.skipped is not None:
         return _skipped(outcome.action, outcome.skipped)
+    if outcome.image_removed is not None:
+        suffix = {
+            None: "Ready to paste.",
+            Pasted.PASTED: "Pasted.",
+        }.get(outcome.pasted, "Not pasted: press Ctrl+V yourself.")
+        if outcome.image_removed:
+            return Message(
+                "veil: image sanitized",
+                f"Removed {_blocks(outcome.image_removed)} from the image. {suffix}",
+            )
+        return Message("veil: image sanitized", f"Converted image to clean PNG. {suffix}")
     detail = categories(outcome.replaced)
     if outcome.action is Action.RESTORE:
         leftover = sum(outcome.residue.values())
@@ -204,6 +217,10 @@ def _sensitive_note(outcome: Outcome) -> str:
     return ""
 
 
+def _blocks(count: int) -> str:
+    return f"{count} metadata block" if count == 1 else f"{count} metadata blocks"
+
+
 def _line(outcome: Outcome) -> str:
     if outcome.skipped is Skip.DENIED:
         return (
@@ -213,6 +230,10 @@ def _line(outcome: Outcome) -> str:
     if outcome.skipped is not None:
         verb = "restored" if outcome.action is Action.RESTORE else "sanitized"
         return f"veil: clipboard NOT {verb}: {outcome.skipped.value}; left unchanged"
+    if outcome.image_removed is not None:
+        if outcome.image_removed:
+            return f"veil: sanitized: removed {_blocks(outcome.image_removed)} from the image"
+        return "veil: sanitized: converted image to clean PNG"
     detail = f" ({categories(outcome.replaced)})" if outcome.replaced else ""
     if outcome.action is Action.RESTORE:
         return f"veil: restored {outcome.total} detail(s){detail}"
@@ -234,6 +255,8 @@ def _skipped(action: Action, skip: Skip) -> Message:
         )
     if skip is Skip.EMPTY:
         return Message("veil: nothing to sanitize", "Nothing is copied.")
+    if skip is Skip.NO_METADATA:
+        return Message("veil: image unchanged", "Image has no metadata. Left unchanged.")
     return Message(
         "veil: clipboard NOT sanitized",
         f"{_sentence(skip.value)}. It still holds the original: don't paste it into a chat.",
