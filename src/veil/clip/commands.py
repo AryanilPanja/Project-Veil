@@ -24,6 +24,9 @@ Generalizing happens before translation, so the phrase is translated like any ot
 After a successful write, the original is removed from KDE's clipboard history (M2.6,
 `history.py`); best effort, reported in the Outcome, never an error.
 
+Forward output that newly contains a `never_reverse` phrase gets a count-only warning (#34):
+restore will leave that phrase alone. The warning never blocks or changes the sanitized text.
+
 The result is computed in full before anything is written. Errors propagate to the caller,
 which runs `fail_closed` for sanitize and from-selection (M2.5, spec §4.4): the clipboard may
 still hold the real text the user believes is about to be sanitized. Restore errors leave the
@@ -38,6 +41,7 @@ from veil.clip import recent
 from veil.clip.ask import Asker, Decision, deny_all
 from veil.clip.history import Forget, Forgetter
 from veil.clip.io import Clipboard, Kind, Selection
+from veil.engine import residue
 from veil.engine.matcher import Engine, RawMatch
 from veil.persona.policy import Policy
 from veil.timing import STAGES
@@ -87,6 +91,7 @@ class Outcome:
     generalized: int = 0  # spans replaced by their generalized phrase
     history: Forget | None = None  # removing the original from the clipboard history (M2.6)
     residue: dict[str, int] = field(default_factory=dict)  # restore: fake-name leftovers (M2.7)
+    never_reverse: int = 0  # sanitize: new phrases restore won't undo (#34), count only
     pasted: Pasted | None = None  # `clip paste` only (ADR-0030)
 
     @property
@@ -181,10 +186,11 @@ def _forward(
 
     out, counts = engine.forward_counted(text)
     preexisting = sum(engine.ambiguous(text).values())
+    new_phrases = residue.never_reverse_hits(engine.lexicon, text, out)
     STAGES.mark("translate")
     if auto and out == content.text and content.plain_only:
         # Nothing to change and no rich types to drop: rewriting would only wake the watcher.
-        return Outcome(action, preexisting_fakes=preexisting)
+        return Outcome(action, preexisting_fakes=preexisting, never_reverse=new_phrases)
     board.write_text(out)  # always CLIPBOARD, plain text only
     STAGES.mark("write")
     history = None
@@ -199,6 +205,7 @@ def _forward(
         decision=decision,
         generalized=len(to_generalize),
         history=history,
+        never_reverse=new_phrases,
     )
 
 

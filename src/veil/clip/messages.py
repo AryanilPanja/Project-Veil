@@ -84,6 +84,11 @@ def stderr_lines(outcome: Outcome) -> list[str]:
             f"veil: warning: the text already contained {outcome.preexisting_fakes} fake "
             "form(s); restore can't tell them apart from translated ones"
         )
+    if outcome.never_reverse:
+        lines.append(
+            f"veil: warning: {outcome.never_reverse} phrase(s) won't be restored (never_reverse); "
+            "check the text before sending"
+        )
     return lines
 
 
@@ -108,7 +113,7 @@ def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
         return True  # rich text only, a Deny: the user must know
     # Fake forms already in the text are normal here (copying an AI answer): only worth a word
     # when something was also replaced (the stderr line always says it).
-    return bool(outcome.total or outcome.asked or outcome.generalized) or (
+    return bool(outcome.total or outcome.asked or outcome.generalized or outcome.never_reverse) or (
         outcome.history in (Forget.FAILED, Forget.PARTIAL)
     )
 
@@ -153,6 +158,8 @@ def notification(outcome: Outcome) -> Message:
             f"Note: {outcome.preexisting_fakes} fake form(s) were already in the text; "
             "restoring may change them."
         )
+    if outcome.never_reverse:
+        body.append(f"Note: {outcome.never_reverse} phrase(s) won't be restored (never_reverse).")
     return Message(f"veil: {where}, {found}", "\n".join(body))
 
 
