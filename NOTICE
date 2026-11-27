@@ -1,37 +1,40 @@
 Project Veil
-Copyright (C) 2026 Aryanil Panja
+Copyright (C) 2026 Aryanil Panja and the Project Veil contributors
+https://github.com/AryanilPanja/Project-Veil
 
 macOS port (veil-macos)
 Copyright (C) 2026 the veil-macos contributors
+https://github.com/VA24d/veil-macos
 
-This program is free software: you can redistribute it and/or modify it under
-the terms of the GNU General Public License as published by the Free Software
-Foundation, version 3 (GPL-3.0-only). It is distributed WITHOUT ANY WARRANTY;
-without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
-PARTICULAR PURPOSE. See the LICENSE file for the full terms.
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License, version 3 (GPL-3.0-only), as published by the Free Software
+Foundation (see LICENSE), with the additional terms below.
 
-The original author relicensed Project Veil from "all rights reserved" to
-GPL-3.0-only. Earlier commits in this repository's history carry the old
-notice; from this change on, the whole work is covered by GPL-3.0-only.
+This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+See the GNU General Public License for more details.
 
-ADDITIONAL TERMS (GPL-3.0 section 7(b))
----------------------------------------
-As permitted by section 7(b) of the GNU General Public License version 3, the
-following term is added to every file of this work:
+The original author relicensed Project Veil from "all rights reserved" to GPL-3.0-only.
+Earlier commits in this repository's history carry the old notice; from that change on, the
+whole work is covered by GPL-3.0-only.
 
-  Anyone who conveys this work, or any work based on it, in source or object
-  form, must preserve the attribution notice below in this NOTICE file, in the
-  documentation or "About" information of the conveyed work, and in the output
-  of `veil --version` (or its equivalent in a modified version):
+Additional term under section 7(b) of the GNU GPL version 3 (attribution)
+--------------------------------------------------------------------------
+If you convey this program, or a work based on it, in source or object form, you must preserve
+the following attribution in this NOTICE file (or an equivalent file shipped with the work) and
+in the Appropriate Legal Notices the work displays, if it displays any. For veil, the
+Appropriate Legal Notices include the output of `veil --version`:
 
-      Based on Project Veil by Aryanil Panja
-      (https://github.com/AryanilPanja/Project-Veil).
+    Based on Project Veil by Aryanil Panja (https://github.com/AryanilPanja/Project-Veil)
 
-Removing or obscuring this notice is not permitted.
+You must also preserve the copyright notices of Project Veil, of the macOS port and of their
+contributors.
 
-As permitted by section 7(c), a modified version must not misrepresent its
-origin: it must be marked as changed (for example in its README or --version
+Additional term under section 7(c) (marking modified versions)
+--------------------------------------------------------------
+A modified version must be marked as changed (for example in its README or `veil --version`
 output) and must not present itself as the original Project Veil.
 
-Because the work is GPL-3.0, every conveyed modified version must itself be
+These terms add no other restriction; under section 7, you may remove any further restriction
+someone adds. Because the work is GPL-3.0, every conveyed modified version must itself be
 released under GPL-3.0 with its complete corresponding source (section 6).
