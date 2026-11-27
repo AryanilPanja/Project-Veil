@@ -20,6 +20,8 @@ _PNG_KEEP = frozenset({
     b"IHDR", b"PLTE", b"IDAT", b"IEND",
     b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"sBIT", b"pHYs", b"bKGD",
     b"acTL", b"fcTL", b"fdAT",
+    # HDR colour (PNG 3rd edition, and the draft spellings): colour data, no metadata.
+    b"cICP", b"mDCV", b"cLLI", b"mDCv", b"cLLi",
 })  # fmt: skip
 
 _JPEG_SOI = b"\xff\xd8"
@@ -28,8 +30,10 @@ _JPEG_KEEP_DIRECT = frozenset({
     0xC4,                    # DHT
     0xC5, 0xC6, 0xC7,        # SOF5..SOF7
     0xC9, 0xCA, 0xCB,        # SOF9..SOF11
+    0xCC,                    # DAC (arithmetic coding conditioning)
     0xCD, 0xCE, 0xCF,        # SOF13..SOF15
     0xDB,                    # DQT
+    0xDC,                    # DNL
     0xDD,                    # DRI
 })  # fmt: skip
 _JPEG_DROP_DIRECT = frozenset({*range(0xE3, 0xEE), 0xEF, 0xFE})  # APP3..APP13, APP15, COM
@@ -99,9 +103,13 @@ def _strip_png(data: bytes) -> StripResult:
         if chunk_type == b"IEND":
             if length != 0:
                 raise ImageError("malformed PNG: invalid IEND length")
-            if offset + 12 != total:
-                raise ImageError("malformed PNG: trailing data after IEND")
             seen_iend = True
+            if offset + 12 != total:
+                # Bytes after IEND (an appended file, another image) are not part of the
+                # picture and can carry their own metadata: drop them.
+                removed += 1
+                kept.append(data[offset : offset + 12])
+                break
 
         end = offset + 12 + length
         if chunk_type in _PNG_KEEP:
@@ -142,7 +150,9 @@ def _strip_jpeg(data: bytes) -> StripResult:
 
         if marker == 0xD9:  # EOI
             if pos != n:
-                raise ImageError("malformed JPEG: trailing data after EOI")
+                # A Motion Photo video or a second (MPF) image after EOI can carry its own
+                # EXIF: drop everything after the first EOI.
+                removed += 1
             kept.append(b"\xff\xd9")
             seen_eoi = True
             break

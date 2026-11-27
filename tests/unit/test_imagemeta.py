@@ -187,7 +187,6 @@ class TestMalformedAndLimits:
             b"not a png" * 5,
             build_png()[0][:-1],  # truncated IEND
             build_png()[0][:-12],  # missing IEND
-            build_png()[0] + b"\x00",  # trailing byte after IEND
             b"\x89PNG\r\n\x1a\n" + png_chunk(b"IDAT", b"x") + png_chunk(b"IEND", b""),  # no IHDR
             b"\x89PNG\r\n\x1a\n"
             + png_chunk(b"IHDR", b"\x00" * 13)
@@ -206,7 +205,6 @@ class TestMalformedAndLimits:
         [
             b"\x00\x00\xff\xd9",  # missing SOI
             build_jpeg()[0][:-2],  # missing EOI
-            build_jpeg()[0] + b"\x00",  # trailing byte after EOI
             b"\xff\xd8\xff\xd8\xff\xd9",  # nested SOI
             b"\xff\xd8\xff\xe1\x00\x01\xff\xd9",  # segment length < 2
             b"\xff\xd8\xff\xe1\xff\xff\xff\xd9",  # segment length overflow
@@ -248,3 +246,16 @@ class TestMalformedAndLimits:
             except ImageError:
                 continue
             assert strip(res.data, fmt) == StripResult(res.data, 0)
+
+
+@pytest.mark.parametrize("fmt", [ImageFormat.PNG, ImageFormat.JPEG])
+def test_bytes_after_the_image_end_are_dropped(fmt):
+    clean = (build_png() if fmt is ImageFormat.PNG else build_jpeg())[0]
+    res = strip(clean + b"appended video: Jane Doe", fmt)
+    assert res == StripResult(clean, 1)
+    assert strip(res.data, fmt) == StripResult(res.data, 0)
+
+
+def test_png_hdr_colour_chunks_are_kept():
+    data, _ = build_png((b"cICP", b"\x09\x10\x00\x01"), (b"cLLI", b"\x00" * 8))
+    assert strip(data, ImageFormat.PNG) == StripResult(data, 0)
