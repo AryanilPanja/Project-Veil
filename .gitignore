@@ -35,5 +35,9 @@ README.private.md
 
 doc/
 agents/
+# agent-facing docs, the handoff and the orchestration board: local only (like doc/)
+docs/agents/
+ORCHESTRATOR.md
+.board/
 notes.txt
 
