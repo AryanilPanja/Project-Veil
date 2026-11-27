@@ -44,6 +44,24 @@ veil menubar                         # optional: menu-bar status item (veil ON /
   Raycast, Alfred, Paste) don't keep the sanitized copy as a separate entry.
 - Copies that an app marks `ConcealedType` (password managers) are left alone.
 
+## Rich text and images
+
+- Most apps copy plain text next to HTML or RTF. veil sanitizes the plain text and writes only
+  that back, so the rich copy, with its links and hidden text, is gone.
+- When an app copies only HTML or RTF, veil converts it to plain text (visible text only; RTF
+  document info such as the author is dropped), sanitizes it and writes plain text. A converter
+  error clears the clipboard.
+- Images: veil removes metadata and writes the image back.
+  - PNG: text chunks (`tEXt`, `zTXt`, `iTXt`), `eXIf`, `tIME` and unknown chunks are dropped;
+    pixels, palette, transparency, colour profile and HDR colour chunks stay.
+  - JPEG: EXIF (GPS, camera, dates), XMP, comments and other APP segments are dropped; JFIF,
+    the ICC profile and Adobe colour data stay. A rotation flag is kept in a minimal EXIF block
+    so the picture is not turned.
+  - Bytes after the end of the image (a Motion Photo video, a second picture) are dropped.
+  - TIFF, HEIC and GIF are converted to PNG with ImageIO first.
+  - An image with no metadata is left as it was. A malformed image clears the clipboard.
+- Text inside an image is not read: a screenshot of your name still shows your name.
+
 ## Why Python, and why in-tree backends
 
 - The time goes into starting Python and loading the persona. Measured on an Apple silicon Mac:

@@ -22,6 +22,9 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
 - `veil audit --format json`: machine-readable value-free JSON findings (`line`, `column`, `path`, `kind`).
 - `SECURITY.md`, `CONTRIBUTING.md`, `docs/release.md`.
 - An ASCII banner for interactive `veil` and `veil --help`.
+- Images on the clipboard lose their metadata (EXIF, GPS, XMP, PNG text chunks, data after the
+  image end); TIFF, HEIC and GIF on macOS are converted to PNG first.
+- Copies offered only as HTML or RTF are converted to plain text and sanitized.
 
 ### Changed
 
