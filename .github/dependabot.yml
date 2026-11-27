@@ -6,6 +6,10 @@ updates:
       interval: weekly
     commit-message:
       prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: uv
     directory: /
@@ -13,4 +17,11 @@ updates:
       interval: weekly
     commit-message:
       prefix: deps
+    groups:
+      uv-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
     open-pull-requests-limit: 5

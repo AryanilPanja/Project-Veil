@@ -71,3 +71,14 @@ The platform-specific code is small and isolated: `paths.py` (a safe place for p
 `crypto/keystore.py` (key storage, behind the `SecretBackend` protocol), `hardening.py`,
 `clip/` (clipboard, notifications, the copy watcher), `killswitch.py` (the background service)
 and `shortcuts.py` (hotkeys). Each of these needs a short design proposal before the code.
+
+## Dependency audit
+
+The `lint + tests (Python 3.13)` job exports the locked dependency set with
+`uv export --frozen --no-hashes --no-emit-project` and scans it with a pinned `uvx pip-audit`.
+A known vulnerability fails the job; the committed lockfile is the source of truth. Actions are
+pinned to full commit SHAs, and Dependabot groups updates into one PR per ecosystem.
+
+For a false positive, add `--ignore-vuln <ID>` to the pip-audit command in `.github/workflows/ci.yml`
+with a comment linking the advisory and the date of the review. Re-check each exception at review
+time; never ignore a vulnerability without that record.
