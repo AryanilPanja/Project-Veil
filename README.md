@@ -10,7 +10,7 @@ about "Alex"; you get them back with your real details restored.
 > **Status: v0.1.0 in progress.** The encrypted persona, the translation engine, the clipboard
 > hotkeys and "veil ON" (every copy sanitized automatically) work on KDE Plasma 6 / Wayland.
 > Still to come before the release: testing on the chat sites themselves (milestone M4).
-> **Getting started:** [`doc/guides/getting-started.md`](doc/guides/getting-started.md).
+> **Getting started:** [`docs/humans/GETTING-STARTED.md`](docs/humans/GETTING-STARTED.md).
 
 ## Planned releases
 | Release | What |
