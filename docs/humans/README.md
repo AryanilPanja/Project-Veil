@@ -7,6 +7,7 @@
 | Read | When |
 |---|---|
 | [`../../README.md`](../../README.md) · [`../../CONTRIBUTING.md`](../../CONTRIBUTING.md) | You want the shortest path to running it, or to contributing. |
+| [GETTING-STARTED.md](GETTING-STARTED.md) | You're setting veil up for the first time and want the path to everyday use. |
 | [OVERVIEW.md](OVERVIEW.md) | You want to know what it does and how it works, in plain words. |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | You want the structure: components, data flow, where things live. |
 | [OPERATIONS.md](OPERATIONS.md) | You're installing, deploying, upgrading, backing up or rolling back. |
