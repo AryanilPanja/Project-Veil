@@ -19,7 +19,8 @@ then force-push your branch.
 
 ## 2. Fork, branch, pull request
 
-Pick a task from [ROADMAP.md](ROADMAP.md) and claim it in an issue (`claim: <task>`) first.
+Pick a task from [ROADMAP.md](ROADMAP.md) (each one is a GitHub issue) and comment on its issue to claim
+it before you start.
 
 
 1. Fork `AryanilPanja/Project-Veil` on GitHub and clone your fork.
