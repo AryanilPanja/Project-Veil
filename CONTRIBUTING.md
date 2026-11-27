@@ -19,6 +19,9 @@ then force-push your branch.
 
 ## 2. Fork, branch, pull request
 
+Pick a task from [ROADMAP.md](ROADMAP.md) and claim it in an issue (`claim: <task>`) first.
+
+
 1. Fork `AryanilPanja/Project-Veil` on GitHub and clone your fork.
 2. Create a branch per task, named `<area>/<short-task>` (e.g. `macos/t1-ci`).
 3. Commit (signed off) with your **GitHub noreply address** as the author email
