@@ -79,6 +79,7 @@ uv run ruff check . && uv run ruff format --check .
 ```
 
 CI runs the same checks on every push and pull request (`.github/workflows/ci.yml`).
+What's planned and what you can pick up: [ROADMAP.md](ROADMAP.md).
 To contribute, read [CONTRIBUTING.md](CONTRIBUTING.md) first: signed-off commits (DCO), pull
 requests into `main`.
 
