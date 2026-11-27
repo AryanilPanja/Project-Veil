@@ -20,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -44,12 +44,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # Node 24 majors (Node 20 actions are deprecated). TODO-later: pin to full commit SHAs
-      # (e.g. with `pinact`); Dependabot keeps them current either way.
-      - uses: actions/checkout@v7
+      # Actions are pinned to full commit SHAs; Dependabot keeps the pins current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
         with:
           version: "0.12.24" # same uv as local development, so `uv sync --locked` behaves alike
           enable-cache: true
@@ -59,6 +58,11 @@ jobs:
 
       - name: Install dependencies (exactly as locked)
         run: uv sync --locked
+
+      - name: Dependency audit
+        run: |
+          uv export --frozen --no-hashes --no-emit-project --output-file /tmp/veil-requirements.txt
+          uvx pip-audit==2.9.0 -r /tmp/veil-requirements.txt
 
       - name: Lint
         run: uv run ruff check .
