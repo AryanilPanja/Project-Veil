@@ -99,7 +99,9 @@ def build_parser() -> argparse.ArgumentParser:
             "about in the terminal, or denied without one",
         )
 
-    on = commands.add_parser("on", help="veil ON: every copy is sanitized (Meta+Alt+K)")
+    mac = sys.platform == "darwin"
+    toggle_key = "Control+Option+K" if mac else "Meta+Alt+K"
+    on = commands.add_parser("on", help=f"veil ON: every copy is sanitized ({toggle_key})")
     off = commands.add_parser(
         "off",
         help="HUMAN-ONLY: veil OFF: copy and paste are normal (asks you to type 'off')",
@@ -128,16 +130,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
-        help="KDE Plasma: set up the hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V); "
-        "macOS: print the Shortcuts.app steps",
+        help=(
+            "print the Shortcuts.app steps for the hotkeys (Control+Option+V/E/K)"
+            if mac
+            else "KDE Plasma: set up the hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V)"
+        ),
     )
     shortcuts.add_argument(
         "--key",
         action="append",
         default=[],
         metavar="NAME=KEYS",
-        help="use another key, e.g. --key restore=Meta+Alt+X (names: sanitize, from-selection, "
-        "restore, toggle, paste, paste-terminal; repeatable)",
+        help=(
+            "use another key, e.g. --key restore=Meta+Alt+X (shown as Control+Option+X; "
+            "names: sanitize, restore, toggle; repeatable)"
+            if mac
+            else "use another key, e.g. --key restore=Meta+Alt+X (names: sanitize, "
+            "from-selection, restore, toggle, paste, paste-terminal; repeatable)"
+        ),
     )
     mode = shortcuts.add_mutually_exclusive_group()
     mode.add_argument("--remove", action="store_true", help="remove veil's hotkeys again")
@@ -147,7 +157,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--status",
         action="store_true",
-        help="show what is installed and which key KDE really has (read-only)",
+        help="KDE: show what is installed and which key KDE really has (read-only)",
     )
 
     paste = clip_commands.choices["paste"]
