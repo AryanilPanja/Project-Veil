@@ -17,13 +17,18 @@ fake name word but no real one (when it matches a real initial, the result is ri
 
 Conservative on purpose: a warning that asks for a look, not a rewrite. Ordinary words that
 happen to start with a fake name ("Smithsonian") are counted too.
+
+`never_reverse_hits` (#34) covers the other direction: phrases forward creates that restore
+will leave alone. It also returns counts only.
 """
 
 from bisect import bisect_right
+from collections import Counter
 from collections.abc import Iterable
 
-from veil.engine.forms import Form, word_spans
+from veil.engine.forms import Form, Lexicon, word_spans
 from veil.persona.model import EntityKind
+from veil.text.aho import PatternIndex
 from veil.text.normalize import canon
 
 NAME_KINDS = frozenset({EntityKind.NAME, EntityKind.PERSON_NAME})
@@ -130,6 +135,37 @@ def _uncovered(
     if cursor < end:
         pieces.append((cursor, end))
     return pieces
+
+
+def never_reverse_hits(lexicon: Lexicon, original: str, forward_output: str) -> int:
+    """New `never_reverse` phrases forward created; a count, never the phrases (#34).
+
+    A phrase is a bounded occurrence of one of `lexicon.never_reverse`, compared in canon
+    form with boundaries judged on the NFKC text (ADR-0026, the same semantics as the
+    matcher's protected spans). Occurrences already bounded in `original` are not new:
+    per phrase the count is max(0, occurrences in the output - occurrences in the input),
+    summed over phrases. Overlapping entries count once, longest first. Empty or corrupt
+    entries are ignored; the warning never changes the text.
+    """
+    phrases = tuple(sorted({key for key in (canon(p) for p in lexicon.never_reverse) if key}))
+    if not phrases:
+        return 0
+    index = PatternIndex(phrases)
+    before = _phrase_counts(index, original)
+    after = _phrase_counts(index, forward_output)
+    return sum(max(0, after.get(i, 0) - before.get(i, 0)) for i in range(index.size))
+
+
+def _phrase_counts(index: PatternIndex, text: str) -> Counter[int]:
+    """Bounded occurrences per pattern, each span counted once (longest phrase wins)."""
+    counts: Counter[int] = Counter()
+    taken: list[tuple[int, int]] = []
+    for hit in sorted(index.find(text), key=lambda h: (-(h.end - h.start), h.start, h.pattern)):
+        if any(hit.start < end and start < hit.end for start, end in taken):
+            continue
+        taken.append((hit.start, hit.end))
+        counts[hit.pattern] += 1
+    return counts
 
 
 LABELS = {EntityKind.NAME.value: "your name", EntityKind.PERSON_NAME.value: "other people's names"}
