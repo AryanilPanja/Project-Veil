@@ -4,6 +4,9 @@ The YAML is parsed with PyYAML's SafeLoader and the comments are checked against
 PyYAML discards comments, so a pin can only be verified end-to-end by reading both. Ruff TID251
 bans `yaml.safe_load` in this repo; `SafeLoader(...).get_single_data()` is the equivalent safe
 parse.
+
+Pins are checked by shape, never against fixed SHAs or versions (T5): Dependabot bumps the
+pin and its version comment without this suite going red.
 """
 
 from __future__ import annotations
@@ -20,10 +23,7 @@ DEPENDABOT = ROOT / ".github" / "dependabot.yml"
 CONTRIBUTING = ROOT / "CONTRIBUTING.md"
 
 REQUIRED_JOB_NAMES = frozenset({"DCO sign-off", "lint + tests (Python 3.13)"})
-EXPECTED_PINS = {
-    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
-    "astral-sh/setup-uv": "37802adc94f370d6bfd71619e3f0bf239e1f3b78",
-}
+EXPECTED_REPOS = frozenset({"actions/checkout", "astral-sh/setup-uv"})
 ERROR_CODES = frozenset({"not-a-uses-line", "bad-ref", "not-full-sha", "bad-version-comment"})
 SHA = re.compile(r"^[0-9a-f]{40}$")
 USES = re.compile(r"^\s*(?:-\s*)?uses:\s*(\S+)\s*(?:#\s*(.*?))?\s*$")
@@ -70,12 +70,52 @@ def test_workflow_uses_are_fully_pinned() -> None:
 
 
 def test_pins_match_the_contract() -> None:
+    # Shape is checked in test_workflow_uses_are_fully_pinned; no SHA or version is fixed here,
+    # so Dependabot can refresh a pin without this test failing (T5).
+    repos: set[str] = set()
     for line in _uses_lines():
         match = USES.match(line)
         assert match is not None
-        repo, _, pin = match.group(1).partition("@")
-        assert repo in EXPECTED_PINS, repo
-        assert pin == EXPECTED_PINS[repo], repo
+        repo, _, _pin = match.group(1).partition("@")
+        repos.add(repo)
+    assert repos == EXPECTED_REPOS
+
+
+def _bumped(line: str) -> str:
+    """A synthetic Dependabot refresh: new valid SHA and a newer version comment."""
+    match = USES.match(line)
+    assert match is not None
+    assert uses_error(line) is None
+    ref, comment = match.group(1), match.group(2)
+    repo, _, sha = ref.partition("@")
+    assert comment is not None
+    new_sha = ("0" if sha[0] != "0" else "1") + sha[1:]
+    major = int(comment[1:].split(".")[0])
+    return f"{line[: match.start(1)]}{repo}@{new_sha} # v{major + 100}.0.0"
+
+
+def test_dependabot_sha_bumps_are_accepted() -> None:
+    original = CI.read_text(encoding="utf-8")
+    refreshed = "\n".join(
+        _bumped(line) if USES.match(line) and uses_error(line) is None else line
+        for line in original.splitlines()
+    ) + ("\n" if original.endswith("\n") else "")
+    assert refreshed != original  # the simulated bump really changed the pins
+    uses = [line for line in refreshed.splitlines() if USES.match(line)]
+    assert len(uses) == len(_uses_lines())
+    assert all(uses_error(line) is None for line in uses)
+    repos: set[str] = set()
+    for line in uses:
+        match = USES.match(line)
+        assert match is not None
+        repos.add(match.group(1).partition("@")[0])
+    assert repos == EXPECTED_REPOS
+
+
+def test_tag_refresh_is_rejected() -> None:
+    line = next(line for line in _uses_lines() if uses_error(line) is None)
+    tag = re.sub(r"@[0-9a-f]{40}", "@v10", line, count=1)
+    assert uses_error(tag) == "not-full-sha"
 
 
 @pytest.mark.parametrize(
