@@ -22,6 +22,15 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
   evaluation code and destructive git commands (`docs/agent-guard.md`).
 - Tracked Claude Code settings for the guard (`contrib/agent-guard/claude-settings.json`):
   deny rules plus the OS sandbox with no unsandboxed escape.
+- agent-guard second-model review (`[second_review]` in `.veil-agent-guard.toml`, or
+  `veil agent-guard review --second`): Gemini through the Antigravity CLI (`agy`) reads the
+  session's diff, the user's requests and the agent's final message, and reports work not
+  done, claims the diff doesn't support, silently dropped steps and fake data. A HIGH finding
+  sends the agent back once. Secret files and secret-looking values are removed first.
+- `veil agent-guard install` sets `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY` and `DISABLE_FEEDBACK_COMMAND` for the project.
+- `veil agent-guard doctor`: checks the hooks, sandbox, telemetry opt-outs, OpenTelemetry
+  prompt export, transcript retention (`cleanupPeriodDays`) and the second reviewer.
 - `SECURITY.md`, `CONTRIBUTING.md`, `docs/release.md`.
 - An ASCII banner for interactive `veil` and `veil --help`.
 - Images on the clipboard lose their metadata (EXIF, GPS, XMP, PNG text chunks, data after the

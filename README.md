@@ -84,6 +84,10 @@ veil agent-guard install    # in a project you open with Claude Code
   commands.
 - Tells the agent that veil is active, so it keeps fake names as they are and doesn't ask for
   real ones.
+- Turns off Claude Code's usage metrics, error reports, session survey and `/feedback`
+  uploads for the project. `veil agent-guard doctor` checks these and transcript retention.
+- Optional: a model from another family (Gemini through the Antigravity CLI) checks whether
+  the diff does what you asked and whether the agent's "done, tests pass" is true.
 
 Details and the incidents it is based on: [`docs/agent-guard.md`](docs/agent-guard.md).
 

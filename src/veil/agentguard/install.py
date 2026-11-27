@@ -60,7 +60,8 @@ def build_hooks(*, warn: bool = False) -> dict[str, list[dict[str, Any]]]:
         ],
         "Stop": [
             {
-                "hooks": [{"type": "command", "command": _hook("stop")}],
+                # test_command (up to 600 s) plus the second-model review (up to 1200 s).
+                "hooks": [{"type": "command", "command": _hook("stop"), "timeout": 1900}],
             }
         ],
     }

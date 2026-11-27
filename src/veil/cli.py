@@ -278,6 +278,19 @@ def build_parser() -> argparse.ArgumentParser:
     ag_review.add_argument(
         "--notify", action="store_true", help="send desktop notification on high findings"
     )
+    ag_review.add_argument(
+        "--second",
+        action="store_true",
+        help="also ask a second model (Antigravity agy, [second_review] settings) to review",
+    )
+    ag_review.add_argument(
+        "--task", metavar="TEXT", default=None, help="with --second: what the change should do"
+    )
+
+    ag_commands.add_parser(
+        "doctor",
+        help="check the guard, Claude Code telemetry opt-outs, transcript retention and agy",
+    )
     return parser
 
 
@@ -367,7 +380,20 @@ def _agent_guard_command(args: argparse.Namespace, parser: argparse.ArgumentPars
     if args.agent_guard_command == "review":
         from veil.agentguard.review import run_review
 
-        return run_review(Path.cwd(), base=args.base, as_json=args.json, notify_user=args.notify)
+        if args.task is not None and not args.second:
+            parser.error("--task needs --second")
+        return run_review(
+            Path.cwd(),
+            base=args.base,
+            as_json=args.json,
+            notify_user=args.notify,
+            second=args.second,
+            task=args.task,
+        )
+    if args.agent_guard_command == "doctor":
+        from veil.agentguard.doctor import run_doctor
+
+        return run_doctor(Path.cwd())
     return int(ExitCode.OK)
 
 
