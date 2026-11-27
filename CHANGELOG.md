@@ -24,6 +24,9 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
   deny rules plus the OS sandbox with no unsandboxed escape.
 - `SECURITY.md`, `CONTRIBUTING.md`, `docs/release.md`.
 - An ASCII banner for interactive `veil` and `veil --help`.
+- Images on the clipboard lose their metadata (EXIF, GPS, XMP, PNG text chunks, data after the
+  image end); TIFF, HEIC and GIF on macOS are converted to PNG first.
+- Copies offered only as HTML or RTF are converted to plain text and sanitized.
 
 ### Changed
 
@@ -31,6 +34,9 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
   `veil --version` carry the attribution required under section 7(b).
 - `secretstorage` and `jeepney` install on Linux only.
 - `veil audit` also reports listed sensitive terms (by position and category).
+- `veil --help` names the macOS hotkeys (Control+Option) and Shortcuts.app on macOS.
+- `NOTICE` merges the upstream wording (contributors, Appropriate Legal Notices) with the port's
+  copyright and the section 7(c) term.
 
 ### Fixed
 
