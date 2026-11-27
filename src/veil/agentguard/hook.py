@@ -165,9 +165,11 @@ def run_stop() -> int:
                 payload = parsed
         except json.JSONDecodeError:
             payload = {}
-    block_reason = evaluate_stop(payload)
+    block_reason, note = evaluate_stop_full(payload)
     if block_reason is not None:
         ui.out(json.dumps({"decision": "block", "reason": block_reason}))
+    elif note:
+        ui.out(json.dumps({"systemMessage": note}))
     return int(ExitCode.OK)
 
 
@@ -1702,7 +1704,17 @@ def _append_log_entry(entry: dict[str, Any]) -> Path:
 
 def evaluate_stop(payload: dict[str, Any]) -> str | None:
     """Run review from session HEAD and optional test_command; return block reason or None."""
-    from veil.agentguard.review import high_findings_summary, review_repo, send_notification
+    return evaluate_stop_full(payload)[0]
+
+
+def evaluate_stop_full(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Block reason (or None) and a note for the user (or None), such as an unavailable
+    second reviewer."""
+    from veil.agentguard.review import (
+        high_findings_summary,
+        review_repo_with_diffs,
+        send_notification,
+    )
 
     session_id = payload.get("session_id")
     session_data = (
@@ -1712,8 +1724,9 @@ def evaluate_stop(payload: dict[str, Any]) -> str | None:
     cwd = _resolve_cwd(cwd_raw)
     base_head = session_data.get("head") if isinstance(session_data.get("head"), str) else None
 
-    result = review_repo(cwd, base=base_head)
+    result, diffs = review_repo_with_diffs(cwd, base=base_head)
     config = load_config(cwd)
+    stopping_again = payload.get("stop_hook_active") is True
 
     test_exit: int | None = None
     if config.test_command:
@@ -1726,17 +1739,107 @@ def evaluate_stop(payload: dict[str, Any]) -> str | None:
     if test_exit is not None and test_exit != 0:
         reasons.append(f"test_command failed (exit {test_exit})")
 
+    note: str | None = None
+    if config.second_review.enabled and not stopping_again:
+        second_reason, note = _second_review(payload, session_id, diffs, config, test_exit)
+        if second_reason:
+            reasons.append(second_reason)
+
     if not reasons:
-        return None
+        return None, note
 
     full_reason = "veil agent-guard: " + "; ".join(reasons)
     send_notification(full_reason)
-    if payload.get("stop_hook_active") is True:
+    if stopping_again:
         # Claude Code sets this when the agent is stopping again after a block. Blocking a
         # second time would loop forever on a finding the user asked for (deleting a test on
         # purpose); the notification and the log keep the flag.
-        return None
-    return full_reason
+        return None, note
+    return full_reason, note
+
+
+def _second_review(
+    payload: dict[str, Any],
+    session_id: object,
+    diffs: list[Any],
+    config: GuardConfig,
+    test_exit: int | None,
+) -> tuple[str | None, str | None]:
+    """Run the second-model review once per distinct diff; return (block reason, user note)."""
+    from veil.agentguard.review import Severity
+    from veil.agentguard.second import (
+        Status,
+        TaskContext,
+        clean_text,
+        read_task,
+        render_diff,
+        run_second_review,
+    )
+
+    settings = config.second_review
+    task = read_task(payload.get("transcript_path")) if settings.send_task else TaskContext()
+    if test_exit is not None:
+        outcome = "passed" if test_exit == 0 else f"failed with exit {test_exit}"
+        task = TaskContext(
+            requests=task.requests,
+            final_message=f"{task.final_message}\n\n[veil ran test_command: {outcome}]".strip(),
+        )
+    digest = hashlib.sha256(
+        (render_diff(diffs) + "\0" + task.requests + "\0" + task.final_message).encode()
+    ).hexdigest()
+    known = isinstance(session_id, str) and bool(session_id)
+    if known and _read_session_state(str(session_id)).get("second_review_digest") == digest:
+        return None, None  # this exact diff and task were already reviewed
+
+    review = run_second_review(diffs, settings, task)
+    if known and review.status is Status.OK:
+        _update_session_state(str(session_id), {"second_review_digest": digest})
+    with contextlib.suppress(OSError):
+        _append_log_entry(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "session_id": session_id if isinstance(session_id, str) else "",
+                "tool_name": "stop_second_review",
+                "paths": [],
+                "sha256": None,
+                "status": review.status.value,
+                "detail": review.detail,
+                "verdict": review.verdict,
+                "findings": [
+                    {"rule_id": f.rule_id, "severity": f.severity.value, "path": f.path}
+                    for f in review.findings
+                ],
+            }
+        )
+    if review.status is Status.UNAVAILABLE:
+        detail = clean_text(review.detail, 160)
+        return None, f"veil agent-guard: second review unavailable ({detail})"
+    highs = [f for f in review.findings if f.severity is Severity.HIGH]
+    if not highs:
+        return None, None
+    listed = "; ".join(f"{f.path}:{f.line} {f.reason}" for f in highs[:3])
+    more = f" (+{len(highs) - 3} more)" if len(highs) > 3 else ""
+    summary = f"second reviewer flagged {len(highs)} high: {listed}{more}"
+    if not settings.block:
+        return None, f"veil agent-guard: {summary}"
+    return summary, None
+
+
+def _update_session_state(session_id: str, fields: dict[str, Any]) -> None:
+    path = session_state_path(session_id)
+    with contextlib.suppress(OSError):
+        _ensure_private_dir(path.parent)
+        data = _read_session_state(session_id)
+        data.update(fields)
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        try:
+            os.write(fd, (json.dumps(data) + "\n").encode("utf-8"))
+        finally:
+            os.close(fd)
 
 
 def _read_session_state(session_id: str) -> dict[str, Any]:

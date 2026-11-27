@@ -1453,10 +1453,17 @@ def send_notification(body: str) -> bool:
 
 
 def review_repo(repo: Path, *, base: str | None = None) -> ReviewResult:
+    return review_repo_with_diffs(repo, base=base)[0]
+
+
+def review_repo_with_diffs(
+    repo: Path, *, base: str | None = None
+) -> tuple[ReviewResult, list[FileDiff]]:
+    """The pattern review plus the diffs it read, for the second-model review."""
     base_ref = resolve_base_ref(repo, base)
     diffs = collect_diffs(repo, base_ref)
     findings = scan_diffs(diffs, repo=repo)
-    return ReviewResult(base_ref=base_ref, findings=tuple(findings))
+    return ReviewResult(base_ref=base_ref, findings=tuple(findings)), diffs
 
 
 def high_findings_summary(findings: tuple[Finding, ...]) -> str:
@@ -1471,13 +1478,33 @@ def run_review(
     base: str | None = None,
     as_json: bool = False,
     notify_user: bool = False,
+    second: bool = False,
+    task: str | None = None,
 ) -> int:
     """Run `veil agent-guard review` and return its ExitCode."""
-    result = review_repo(repo, base=base)
+    result, diffs = review_repo_with_diffs(repo, base=base)
+    second_status: dict[str, str] | None = None
+    if second:
+        from dataclasses import replace
+
+        from veil.agentguard.config import load_config
+        from veil.agentguard.second import TaskContext, run_second_review
+
+        config = replace(load_config(repo).second_review, enabled=True)
+        extra = run_second_review(diffs, config, TaskContext(requests=task or ""))
+        result = ReviewResult(base_ref=result.base_ref, findings=result.findings + extra.findings)
+        second_status = {"status": extra.status.value, "detail": extra.detail}
     if as_json:
-        ui.out(format_json(result))
+        if second_status is None:
+            ui.out(format_json(result))
+        else:
+            payload = json.loads(format_json(result))
+            payload["second_review"] = second_status
+            ui.out(json.dumps(payload, indent=2))
     else:
         ui.out(format_table(result))
+        if second_status is not None and second_status["status"] != "ok":
+            ui.out(f"second review {second_status['status']}: {second_status['detail']}")
     if notify_user and result.high_count > 0:
         send_notification(high_findings_summary(result.findings))
     return result.exit_code

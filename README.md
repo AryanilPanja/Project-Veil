@@ -73,6 +73,26 @@ same code with small platform backends ([`docs/macos.md`](docs/macos.md)).
 The platform-specific parts (file safety, keyring, clipboard, hotkeys) are small modules behind
 shared interfaces; the macOS backends sit next to the Linux ones and are picked at run time.
 
+## Coding agents: `veil agent-guard`
+
+```bash
+veil agent-guard install    # in a project you open with Claude Code
+```
+
+- Blocks agents from veil's key, persona, clipboard tools and kill switch, and runs their shell
+  commands in the OS sandbox.
+- Reviews the session's diff before the agent can call the task done: removed or skipped tests,
+  weakened asserts, edited expected outputs, changed evaluation or metric code, destructive git
+  commands.
+- Tells the agent that veil is active, so it keeps fake names as they are and doesn't ask for
+  real ones.
+- Turns off Claude Code's usage metrics, error reports, session survey and `/feedback`
+  uploads for the project. `veil agent-guard doctor` checks these and transcript retention.
+- Optional: a model from another family (Gemini through the Antigravity CLI) checks whether
+  the diff does what you asked and whether the agent's "done, tests pass" is true.
+
+Details and the incidents it is based on: [`docs/agent-guard.md`](docs/agent-guard.md).
+
 ## Limits
 Veil **reduces** what you reveal; it does **not** make you anonymous. Your AI account already
 identifies you to the provider, unique content (your actual code or research) can identify you,

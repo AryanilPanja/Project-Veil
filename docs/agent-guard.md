@@ -6,6 +6,8 @@ make tests, checks or ML evaluation pass without the code working.
 ```bash
 veil agent-guard install              # in the project; --warn asks instead of blocking
 veil agent-guard review               # the same diff review, by hand or in CI (--json)
+veil agent-guard review --second      # plus the second-model review (below)
+veil agent-guard doctor               # check the guard, telemetry and transcript retention
 veil agent-guard uninstall
 ```
 
@@ -17,6 +19,12 @@ veil agent-guard uninstall
     (`allowUnsandboxedCommands: false`), network only to PyPI and GitHub, and no reads of
     `~/.ssh`, `~/.gnupg`, `~/.config/gh`, the Keychain or veil's config.
   - `disableBypassPermissionsMode`: the agent can't be switched to skip-all-permissions.
+- `env`: `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
+  `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY` and `DISABLE_FEEDBACK_COMMAND` set to `1`. Claude
+  Code then sends no usage metrics or error reports for the project, doesn't show the session
+  survey (whose follow-up question uploads the transcript), and turns off `/feedback`, `/bug`
+  and `/share`, which upload the conversation and keep it for 5 years. Auto-update still
+  works; `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` would turn that off too.
 - `CLAUDE.md` and `AGENTS.md`: a short block between `<!-- veil:begin -->` and
   `<!-- veil:end -->`. It tells the agent that veil is active, that names and contact details
   may be pseudonyms to keep as they are, and not to ask for real ones, run veil, or read the
@@ -75,6 +83,69 @@ Linux.
 - `test_command`: run by the Stop hook; a failing exit sends the agent back once.
 - `protected`: extra paths to protect. `allow`: paths to exempt.
 
+## Second-model review
+
+A model from another family reads the session's work when the agent stops. It looks for what
+the patterns above can't see: the diff doesn't do what you asked, the agent's final message
+claims something the diff and the test run don't show ("tests pass", "fixed"), a step was
+dropped without saying so, or placeholder data stands in for real logic.
+
+It uses Gemini through the Antigravity CLI (`agy`), which must be installed and signed in.
+Turn it on in `.veil-agent-guard.toml`:
+
+```toml
+[second_review]
+model = "gemini-4-hydrogen-high"   # any model `agy models` lists
+timeout = 300                      # seconds, 10 to 1200
+send_task = true                   # false sends the diff only
+block = true                       # false shows HIGH findings to you instead of the agent
+# command = "/path/to/agy"         # default: agy on PATH, then ~/.local/bin/agy
+```
+
+What is sent to Google:
+
+- The diff since the session started, including new untracked files. The content of
+  `persona.yaml`, `*.age`, `.env*`, key files, `.claude/settings*.json` and the guard config
+  is replaced by a note. API keys, tokens, private keys and `password = ...` values elsewhere
+  are replaced with `[redacted by veil]`. Pattern-based: a secret in an unusual format can
+  get through.
+- With `send_task`: the messages you typed in the session (from the Claude Code transcript)
+  and the agent's last reply, plus the `test_command` result. Text you pasted through veil
+  holds pseudonyms, not your details.
+
+How it runs:
+
+- `agy --sandbox --mode plan` in a new empty temporary directory, so the reviewer can read
+  only the prompt, not your repository or home directory.
+- The diff and messages sit inside tags with a random suffix, and the reviewer is told not to
+  follow instructions in them. Its answer must match a JSON schema; each reason is cut to 300
+  characters and stripped of control and bidi characters before the agent sees it.
+- Once per distinct diff and task: stopping again with nothing changed doesn't call it, and
+  neither does the second stop after a block.
+- If `agy` is missing, signed out, over quota or slow, the stop goes through and Claude Code
+  shows "second review unavailable" with the reason. The pattern review still runs.
+- Each run is logged (`tool_name: stop_second_review`) with its status and finding ids.
+
+`veil agent-guard review --second [--task "what it should do"]` runs it by hand, whether or
+not `[second_review]` is on.
+
+## Doctor
+
+`veil agent-guard doctor` reads the user, project and local Claude Code settings and the
+environment, and reports:
+
+- whether the hooks, the sandbox and the bypass-mode lock are in place;
+- each telemetry opt-out above, or `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`;
+- OpenTelemetry export that includes prompts or tool content (`OTEL_LOG_USER_PROMPTS`,
+  `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_TOOL_CONTENT`);
+- `cleanupPeriodDays` over 30: Claude Code keeps plaintext transcripts in
+  `~/.claude/projects/` that long;
+- whether the second reviewer is on and `agy` is found.
+
+It exits 1 if anything is `warn`. It can't see one setting: on Free, Pro, Max and Ultra,
+whether your chats are used for training (5-year retention when on, 30 days when off) is set
+only at claude.ai/settings/data-privacy-controls.
+
 ## Limits
 
 - The sandbox is the hard boundary. The pre-tool hook matches commands and paths; a
@@ -85,6 +156,9 @@ Linux.
 - A HIGH finding sends the agent back once. If you asked for the change (deleting a test on
   purpose), the second stop goes through and the notification stays.
 - Claude Code only. Other agents can run `veil agent-guard review` in CI.
+- The second reviewer is a language model too. It can miss things, flag correct work, or be
+  steered by text in the diff despite the tags. Treat its findings as a reason to look, and
+  keep the test run and CI as the check that counts.
 
 ## Why
 

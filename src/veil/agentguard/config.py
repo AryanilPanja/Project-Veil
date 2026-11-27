@@ -76,11 +76,29 @@ _GUARD_HOME_REL_DIRS: tuple[str, ...] = (
 _MAX_CONFIG_BYTES = 1_048_576
 
 
+DEFAULT_SECOND_REVIEW_MODEL = "gemini-4-hydrogen-high"
+DEFAULT_SECOND_REVIEW_TIMEOUT = 300
+_MAX_SECOND_REVIEW_TIMEOUT = 1200
+
+
+@dataclass(frozen=True)
+class SecondReviewConfig:
+    """`[second_review]`: a second model (Antigravity `agy`) reviews the session's diff."""
+
+    enabled: bool = False
+    command: str | None = None  # path to `agy`; None means look on PATH and in ~/.local/bin
+    model: str = DEFAULT_SECOND_REVIEW_MODEL
+    timeout: int = DEFAULT_SECOND_REVIEW_TIMEOUT
+    send_task: bool = True  # include the user's requests and the agent's final message
+    block: bool = True  # a HIGH finding sends the agent back once, like the diff review
+
+
 @dataclass(frozen=True)
 class GuardConfig:
     protected: tuple[str, ...] = ()
     allow: tuple[str, ...] = ()
     test_command: str | None = None
+    second_review: SecondReviewConfig = SecondReviewConfig()
 
     @property
     def all_protected(self) -> tuple[str, ...]:
@@ -131,7 +149,51 @@ def load_config(project_dir: Path) -> GuardConfig:
     test_command = (
         test_cmd_raw.strip() if isinstance(test_cmd_raw, str) and test_cmd_raw.strip() else None
     )
-    return GuardConfig(protected=protected, allow=allow, test_command=test_command)
+    second_review = _parse_second_review(data.get("second_review"))
+    return GuardConfig(
+        protected=protected, allow=allow, test_command=test_command, second_review=second_review
+    )
+
+
+def _parse_second_review(value: object) -> SecondReviewConfig:
+    if value is None:
+        return SecondReviewConfig()
+    if not isinstance(value, dict):
+        raise _bad_second_review("[second_review] must be a table")
+    known = {"enabled", "command", "model", "timeout", "send_task", "block"}
+    unknown = sorted(set(value) - known)
+    if unknown:
+        raise _bad_second_review(f"unknown key {unknown[0]!r} in [second_review]")
+    for key in ("enabled", "send_task", "block"):
+        if key in value and not isinstance(value[key], bool):
+            raise _bad_second_review(f"second_review.{key} must be true or false")
+    command = value.get("command")
+    if command is not None and (not isinstance(command, str) or not command.strip()):
+        raise _bad_second_review("second_review.command must be a path")
+    model = value.get("model", DEFAULT_SECOND_REVIEW_MODEL)
+    if not isinstance(model, str) or not model.strip() or model.startswith("-"):
+        raise _bad_second_review("second_review.model must be a model name")
+    timeout = value.get("timeout", DEFAULT_SECOND_REVIEW_TIMEOUT)
+    if (
+        not isinstance(timeout, int)
+        or isinstance(timeout, bool)
+        or not 10 <= timeout <= _MAX_SECOND_REVIEW_TIMEOUT
+    ):
+        raise _bad_second_review(
+            f"second_review.timeout must be 10 to {_MAX_SECOND_REVIEW_TIMEOUT} seconds"
+        )
+    return SecondReviewConfig(
+        enabled=value.get("enabled", True),
+        command=command.strip() if isinstance(command, str) else None,
+        model=model.strip(),
+        timeout=timeout,
+        send_task=value.get("send_task", True),
+        block=value.get("block", True),
+    )
+
+
+def _bad_second_review(message: str) -> VeilError:
+    return VeilError(f"invalid .veil-agent-guard.toml: {message}", exit_code=ExitCode.USAGE)
 
 
 def _as_str_tuple(value: object, field_name: str) -> tuple[str, ...]:

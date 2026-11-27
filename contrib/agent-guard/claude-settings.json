@@ -1,5 +1,11 @@
 {
-  "$comment": "Veil agent guard for Claude Code. Copy to <project>/.claude/settings.json (or run `veil agent-guard install`). Keeps coding agents away from veil's key, persona, clipboard and kill switch, and runs their shell commands in the OS sandbox. Linux and macOS rules are both listed; a rule for a tool that is not installed is harmless.",
+  "$comment": "Veil agent guard for Claude Code. Copy to <project>/.claude/settings.json (or run `veil agent-guard install`). Keeps coding agents away from veil's key, persona, clipboard and kill switch, runs their shell commands in the OS sandbox, and turns off Claude Code's usage metrics, error reports, session survey and /feedback upload for this project. Linux and macOS rules are both listed; a rule for a tool that is not installed is harmless.",
+  "env": {
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+    "DISABLE_FEEDBACK_COMMAND": "1"
+  },
   "permissions": {
     "disableBypassPermissionsMode": "disable",
     "deny": [
