@@ -1,0 +1,36 @@
+# veil M4 site matrix: slots filled from the SYNTHETIC persona (tests/fixtures/synthetic_jane.yaml).
+# Every value is invented. Use it to try matrix.html, and in the tests.
+first_name = Jane
+last_name = Doe
+full_name = Jane Doe
+short_name = Janie
+name_bengali = জেন
+name_devanagari = जेन
+name_tamil = ஜேன்
+email = jane.doe@xyz.example.test
+email_2 = janedoe2001@mail.example.test
+phone = +91 90000 00001
+phone_other_format = 9000000001
+address = 1 Example Street Springfield
+pin_code = 000001
+date_of_birth = 14/03/2001
+date_of_birth_other_format = 14th March 2001
+hometown = Springfield
+institution = XYZ Institute of Technology
+institution_short = XYZIT
+lab = Vision Lab
+advisor = Prof. Mary Major
+advisor_bare = Mary Major
+employer = Acme Labs
+manager = Bob Builder
+relative = John Doe
+github = jane-doe-dev
+website = janedoe.example.test
+private_repo = jane-thesis
+linux_user = janed
+hostname = janed
+home_dir = /home/janed
+cluster = orion
+cluster_user = jane.doe
+slurm_account = vision_lab
+sensitive_term = asthma

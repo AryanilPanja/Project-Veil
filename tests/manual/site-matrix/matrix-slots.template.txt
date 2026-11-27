@@ -1,0 +1,69 @@
+# veil M4 site matrix: test-text slots (template)
+#
+# 1. Copy this file to  tests/manual/site-matrix/matrix-slots.txt  (git-ignored; never commit it).
+# 2. Fill in your REAL values: the ones veil should replace. Fill the important ones first; an
+#    empty slot is skipped, and any sentence that needs it is left out.
+#    Don't fill fields your persona KEEPs (veil leaves those alone on purpose).
+# 3. Open matrix.html in the browser and load the filled file. It stays in the page's memory only.
+# 4. Delete the filled copy when M4 is done.
+#
+# Format: key = value, one per line. The first "=" splits; spaces around the value are trimmed.
+# Each key may appear once. Lines starting with # are comments.
+# (Owner's choice, 2026-10-27: agents may read the filled copy during development.)
+
+# ── Names ──
+first_name =
+last_name =
+full_name =
+# a short name or nickname your persona lists
+short_name =
+# your name as you write it in each script (leave empty if your persona doesn't list it)
+name_bengali =
+name_devanagari =
+name_tamil =
+
+# ── Contact ──
+email =
+email_2 =
+# your phone as you usually write it, and the same number written another way
+phone =
+phone_other_format =
+address =
+pin_code =
+
+# ── Dates and places ──
+# as you usually write it, and the same date written another way (e.g. "14th March 2001")
+date_of_birth =
+date_of_birth_other_format =
+hometown =
+
+# ── Study and work ──
+institution =
+# an alias or abbreviation of the institution
+institution_short =
+lab =
+# with the title (e.g. "Prof. …"), and without it
+advisor =
+advisor_bare =
+employer =
+manager =
+# one family member or friend your persona lists
+relative =
+
+# ── Online ──
+github =
+# a domain only, without https://
+website =
+private_repo =
+
+# ── Machines ──
+linux_user =
+hostname =
+home_dir =
+cluster =
+cluster_user =
+slurm_account =
+
+# ── Sensitive (ask-before-send) ──
+# one term from your persona's sensitive section
+sensitive_term =

@@ -124,3 +124,40 @@ def test_fold_map_origins_are_valid_and_non_decreasing(text):
     assert len(folded) == len(origin)
     assert all(0 <= i < len(source) for i in origin)
     assert origin == sorted(origin)
+
+
+# ── M1.8 sweep: the ASCII fast path must be exactly the general algorithm ──
+
+from hypothesis import given as _given  # noqa: E402
+from hypothesis import settings as _settings  # noqa: E402
+from hypothesis import strategies as _st  # noqa: E402
+
+from veil.text import normalize as _normalize  # noqa: E402
+
+ASCII_ALL = _st.text(alphabet=[chr(i) for i in range(128)], max_size=80)
+
+
+@_settings(max_examples=500)
+@_given(ASCII_ALL)
+def test_property_ascii_fast_path_equals_general(text):
+    assert _normalize.fold_with_map(text) == _normalize._fold_with_map_general(text)
+
+
+def test_fast_path_handles_every_ascii_whitespace_kind():
+    text = "a\tb\nc\rd\x0be\x0cf\x1cg\x1dh\x1ei\x1fj  k"
+    assert _normalize.fold_with_map(text) == _normalize._fold_with_map_general(text)
+    assert _normalize.fold_with_map(text)[0] == "a b c d e f g h i j k"
+
+
+MIXED = _st.text(
+    alphabet=[chr(i) for i in range(128)]
+    + ["ß", "\u00ad", "\u200b", "\u200d", "\u3000", "\u00a0", "জ", "ে", "İ", "ﬁ", "Ａ", "\u0301"],
+    max_size=80,
+)
+
+
+@_settings(max_examples=500)
+@_given(MIXED)
+def test_property_mixed_text_fast_path_equals_general(text):
+    """ASCII stretches in mixed text, incl. whitespace runs that span ASCII and non-ASCII."""
+    assert _normalize.fold_with_map(text) == _normalize._fold_with_map_general(text)

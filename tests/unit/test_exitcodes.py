@@ -13,6 +13,8 @@ ADR_0027_TABLE = {
     "BUSY": 6,
     "UNSAFE_ENVIRONMENT": 7,
     "ABORTED": 8,
+    "STORAGE": 9,
+    "CLIPBOARD": 10,
     "INTERNAL": 70,
     "INTERRUPTED": 130,
 }

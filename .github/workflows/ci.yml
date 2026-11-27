@@ -14,6 +14,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dco:
+    name: DCO sign-off
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Every commit is signed off (git commit -s)
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        # Only hashes are printed: commit messages are contributor-controlled text.
+        run: |
+          missing=0
+          for commit in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            if ! git log -1 --format=%B "$commit" | grep -qE '^Signed-off-by: .+ <[^>]+>$'; then
+              echo "::error::commit ${commit:0:12} has no Signed-off-by line (git commit -s; see CONTRIBUTING.md)"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
   test:
     name: lint + tests (Python 3.13)
     runs-on: ubuntu-latest
@@ -42,9 +67,16 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Tests
+        env:
+          # Shared runners are slower and noisier than a laptop; the local default is stricter.
+          VEIL_PERF_BUDGET_MS: "1500"
         run: uv run pytest -q
 
       - name: Property tests (stress profile)
         env:
           HYPOTHESIS_PROFILE: ci
-        run: uv run pytest -q tests/unit/test_containment.py tests/unit/test_normalize.py
+        run: >-
+          uv run pytest -q
+          tests/unit/test_containment.py tests/unit/test_normalize.py tests/unit/test_aho.py
+          tests/unit/test_variants.py tests/unit/test_compose.py tests/unit/test_matcher.py
+          tests/unit/test_academic.py tests/unit/test_generate.py

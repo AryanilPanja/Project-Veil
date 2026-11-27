@@ -3,9 +3,12 @@
 Messages must contain field paths, codes and counts only, never persona values.
 """
 
+import getpass
 import sys
+from pathlib import Path
 
 from veil.errors import UnsafeEnvironment, VeilError
+from veil.exitcodes import ExitCode
 
 
 def out(message: str) -> None:
@@ -14,6 +17,33 @@ def out(message: str) -> None:
 
 def err(message: str) -> None:
     print(message, file=sys.stderr)
+
+
+def write(text: str) -> None:
+    """Write text to stdout exactly as given (no newline added): translated output."""
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def read_input(path: Path | None, max_bytes: int) -> str:
+    """The text to translate: a file, or stdin. UTF-8 only; refuses anything over max_bytes."""
+    if path is not None:
+        try:
+            data = path.read_bytes() if path.stat().st_size <= max_bytes else None
+        except FileNotFoundError:
+            raise VeilError("input file not found", exit_code=ExitCode.USAGE) from None
+        except IsADirectoryError:
+            raise VeilError("the input path is a directory", exit_code=ExitCode.USAGE) from None
+        except OSError:
+            raise VeilError("cannot read the input file", exit_code=ExitCode.USAGE) from None
+    else:
+        data = sys.stdin.buffer.read(max_bytes + 1)
+    if data is None or len(data) > max_bytes:
+        raise VeilError(f"the input is larger than {max_bytes} bytes", exit_code=ExitCode.USAGE)
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise VeilError("the input is not valid UTF-8 text", exit_code=ExitCode.USAGE) from None
 
 
 def report_error(error: VeilError) -> None:
@@ -47,6 +77,43 @@ def confirm_typed(prompt: str, expected: str) -> bool:
     if not answer:
         return False
     return answer.strip() == expected
+
+
+def prompt_secret(prompt: str) -> str:
+    """Read a secret without echo. Needs a terminal; never readable from a pipe (agents)."""
+    require_tty("passphrase prompt")
+    try:
+        return getpass.getpass(f"{prompt}: ", stream=sys.stderr)
+    except EOFError:
+        return ""
+
+
+def new_secret(prompt: str) -> str:
+    """Ask twice for a new secret; a mismatch is an error (nothing is set up)."""
+    first = prompt_secret(prompt)
+    if prompt_secret(f"{prompt} (again)") != first:
+        raise VeilError(
+            "the passphrases did not match; nothing was changed", exit_code=ExitCode.USAGE
+        )
+    return first
+
+
+def choose(prompt: str, options: dict[str, str], *, default: str, attempts: int = 5) -> str:
+    """Ask for one of `options` (key → label) by its first letter. EOF or no valid answer → default.
+
+    Prompts go to stderr; needs a terminal (never answerable from a pipe).
+    """
+    require_tty("choice")
+    menu = ", ".join(f"[{key}] {label}" for key, label in options.items())
+    for _ in range(attempts):
+        print(f"{prompt} {menu}: ", end="", file=sys.stderr, flush=True)
+        line = sys.stdin.readline()
+        if not line:
+            return default
+        answer = line.strip().lower()[:1]
+        if answer in options:
+            return answer
+    return default
 
 
 def _isatty(stream: object) -> bool:

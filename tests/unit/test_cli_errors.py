@@ -138,3 +138,54 @@ def test_end_to_end_subprocess_exit_codes():
     result = run_python(code)
     assert result.returncode == ExitCode.BUSY
     assert result.stderr == "veil: persona store is locked\n"
+
+
+# ── argparse never echoes what was typed (sweep 2026-10-26) ──────────────────
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["translate", "Jane Doe"],
+        ["Jane Doe"],
+        ["clip", "Jane"],
+        ["status", "--Jane-Doe"],
+        ["persona", "check", "--format", "Jane"],
+        # repr() switches to double quotes when the value holds an apostrophe
+        ["Jane's"],
+        ["persona", "check", "--format", "Jane's"],
+        ["persona", "check", "--format", 'Jane\'s "Doe"'],
+        ["Jane\nDoe"],
+        ["status", "Jane\nDoe", "more"],
+        ["on", "--for", "Jane"],
+    ],
+)
+def test_usage_errors_do_not_echo_input(argv, capsys):
+    with pytest.raises(SystemExit) as caught:
+        cli.main(argv)
+    assert caught.value.code == ExitCode.USAGE
+    out, err = capsys.readouterr()
+    assert "Jane" not in out + err
+    assert "error:" in err
+
+
+def test_usage_error_still_says_what_kind(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["frobnicate"])
+    err = capsys.readouterr().err
+    assert "invalid choice" in err
+    assert "choose from" in err  # the list of commands is kept: it's the program's, not yours
+
+
+def test_ambiguous_option_value_is_not_echoed(capsys):
+    # "--re=<value>" matches two options; argparse's message quotes the whole argument.
+    parser = cli._Parser(prog="veil")
+    parser.add_argument("--resume")
+    parser.add_argument("--remove")
+    with pytest.raises(SystemExit) as caught:
+        parser.parse_args(["--re=Jane\nDoe"])
+    assert caught.value.code == ExitCode.USAGE
+    err = capsys.readouterr().err
+    assert "Jane" not in err
+    assert "ambiguous option" in err
+    assert "--resume" in err

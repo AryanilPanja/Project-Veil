@@ -4,7 +4,8 @@ import sys
 import pytest
 
 from veil import ui
-from veil.errors import Busy, UnsafeEnvironment
+from veil.errors import Busy, UnsafeEnvironment, VeilError
+from veil.exitcodes import ExitCode
 
 
 class FakeStream(io.StringIO):
@@ -122,3 +123,99 @@ def test_isatty_handles_closed_streams():
             raise ValueError("I/O operation on closed file")
 
     assert ui._isatty(Closed()) is False
+
+
+# ── secret prompts ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def getpass_answers(monkeypatch):
+    calls: list[tuple[str, object]] = []
+    answers: list[object] = []
+
+    def fake(prompt, stream=None):
+        calls.append((prompt, stream))
+        answer = answers.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(ui.getpass, "getpass", fake)
+    return calls, answers
+
+
+def test_prompt_secret_reads_without_echo_on_stderr(interactive, getpass_answers):
+    interactive()
+    calls, answers = getpass_answers
+    answers.append("s3cret phrase")
+    assert ui.prompt_secret("Passphrase") == "s3cret phrase"
+    assert calls == [("Passphrase: ", sys.stderr)]
+
+
+def test_prompt_secret_refuses_without_terminal(monkeypatch, getpass_answers):
+    monkeypatch.setattr("sys.stdin", FakeStream("piped secret\n", tty=False))
+    with pytest.raises(UnsafeEnvironment):
+        ui.prompt_secret("Passphrase")
+    assert getpass_answers[0] == []
+
+
+def test_prompt_secret_eof_is_empty(interactive, getpass_answers):
+    interactive()
+    getpass_answers[1].append(EOFError())
+    assert ui.prompt_secret("Passphrase") == ""
+
+
+def test_new_secret_asks_twice(interactive, getpass_answers):
+    interactive()
+    calls, answers = getpass_answers
+    answers.extend(["पासवर्ड सुरक्षित", "पासवर्ड सुरक्षित"])
+    assert ui.new_secret("New passphrase") == "पासवर्ड सुरक्षित"
+    assert [c[0] for c in calls] == ["New passphrase: ", "New passphrase (again): "]
+
+
+def test_new_secret_mismatch_is_usage_error_without_echo(interactive, getpass_answers):
+    interactive()
+    getpass_answers[1].extend(["first phrase", "second phrase"])
+    with pytest.raises(VeilError) as info:
+        ui.new_secret("New passphrase")
+    assert info.value.exit_code == ExitCode.USAGE
+    assert "first" not in str(info.value)
+    assert "second" not in str(info.value)
+
+
+# ── choose ────────────────────────────────────────────────────────────────────
+
+OPTIONS = {"r": "re-open", "k": "keep draft", "d": "discard"}
+
+
+@pytest.mark.parametrize(
+    ("typed", "expected"),
+    [("r\n", "r"), ("K\n", "k"), ("discard\n", "d"), ("  d  \n", "d"), ("x\nr\n", "r")],
+)
+def test_choose(interactive, typed, expected):
+    interactive(typed)
+    assert ui.choose("What now?", OPTIONS, default="k") == expected
+
+
+def test_choose_eof_returns_default(interactive):
+    interactive("")
+    assert ui.choose("What now?", OPTIONS, default="k") == "k"
+
+
+def test_choose_gives_up_after_attempts(interactive):
+    interactive("x\ny\nz\n")
+    assert ui.choose("What now?", OPTIONS, default="k", attempts=3) == "k"
+
+
+def test_choose_prompts_on_stderr_with_menu(interactive, capsys):
+    interactive("d\n")
+    ui.choose("What now?", OPTIONS, default="k")
+    err = capsys.readouterr().err
+    assert "[r] re-open" in err
+    assert "[d] discard" in err
+
+
+def test_choose_refuses_without_terminal(monkeypatch):
+    monkeypatch.setattr("sys.stdin", FakeStream("r\n", tty=False))
+    with pytest.raises(UnsafeEnvironment):
+        ui.choose("What now?", OPTIONS, default="k")

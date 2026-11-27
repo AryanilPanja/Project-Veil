@@ -5,6 +5,7 @@ NFKC text, so case transitions like `janeResume` stay visible. M0 uses the naive
 Aho-Corasick index and keeps this one as the test oracle.
 """
 
+import functools
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -30,17 +31,34 @@ class PreparedText:
         self.text = nfkc(raw)
         self.folded, self.origin = fold_with_map(self.text)
 
+    @classmethod
+    def from_normalized(cls, text: str) -> "PreparedText":
+        """Prepare text that is already normalized by the caller (offsets stay as given)."""
+        prepared = cls.__new__(cls)
+        prepared.text = text
+        prepared.folded, prepared.origin = fold_with_map(text)
+        return prepared
+
+
+@functools.lru_cache(maxsize=16384)
+def prepared(text: str) -> PreparedText:
+    """A cached PreparedText: validation and lexicon building prepare the same forms many times.
+
+    PreparedText is never mutated after construction, so sharing instances is safe.
+    """
+    return PreparedText(text)
+
 
 def find_bounded(needle: str, haystack: str | PreparedText) -> list[Span]:
     """All bounded occurrences of `needle` in `haystack`, in order (they may overlap)."""
     target = canon(needle)
     if not target:
         return []
-    hay = haystack if isinstance(haystack, PreparedText) else PreparedText(haystack)
+    hay = haystack if isinstance(haystack, PreparedText) else prepared(haystack)
     spans: list[Span] = []
     pos = hay.folded.find(target)
     while pos != -1:
-        span = _to_original(hay, pos, pos + len(target))
+        span = to_original(hay, pos, pos + len(target))
         if span is not None and is_bounded(hay.text, span.start, span.end):
             spans.append(span)
         pos = hay.folded.find(target, pos + 1)
@@ -51,7 +69,7 @@ def contains_bounded(needle: str, haystack: str | PreparedText) -> bool:
     return bool(find_bounded(needle, haystack))
 
 
-def _to_original(hay: PreparedText, fstart: int, fend: int) -> Span | None:
+def to_original(hay: PreparedText, fstart: int, fend: int) -> Span | None:
     """Map a folded match back to original characters; reject matches that split a character.
 
     A match must start at the first folded char of its source character and end at the last
