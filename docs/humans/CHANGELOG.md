@@ -22,6 +22,10 @@
   original removed from KDE's clipboard history.
 - Contributor setup: GPL-3.0 with attribution (NOTICE), CONTRIBUTING, DCO sign-off check,
   ROADMAP with GitHub issues.
+- Early startup errors now use veil's value-free error format and exit code instead of a traceback.
+- A warning (count only) when sanitizing produces a `never_reverse` phrase that restore will leave
+  as is.
+- CI: actions pinned to commit SHAs, a dependency vulnerability audit, grouped Dependabot updates.
 
 ### Known gaps
 - Typing directly into a chat box, images and files, middle-click paste, names not in your

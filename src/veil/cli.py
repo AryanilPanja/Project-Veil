@@ -207,6 +207,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # First: hardening, parser construction and lazy imports can all fail before `run` can report
+    # an error; a plain traceback could quote personal data (#38). The hooks stay installed for the
+    # rest of the process: an error during interpreter shutdown must be redacted too.
+    hardening.install_exception_hooks()
     report = hardening.apply()
     if not report.complete:
         # Never silent. Not enforced: decrypting commands still run (a warning only); refusing
