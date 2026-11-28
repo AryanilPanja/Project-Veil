@@ -10,8 +10,9 @@ about "Alex"; you get them back with your real details restored.
 > **Status: v0.1.0 in progress.** The encrypted persona, the translation engine, the clipboard
 > hotkeys and "veil ON" (every copy sanitized automatically) work on KDE Plasma 6 / Wayland.
 > Still to come before the release: testing on the chat sites themselves (milestone M4).
-> **macOS:** the same features (except `from-selection`), through the Keychain, the pasteboard,
-> CoreGraphics `CGEventPost`, Shortcuts.app and launchd ([`docs/macos.md`](docs/macos.md)).
+> **macOS:** sanitize, restore, sanitize-then-paste (`Cmd+V`), `veil ON`, exported `.shortcut`
+> workflows and a menu-bar status item (`veil menubar`), through the Keychain, the pasteboard and
+> launchd ([`docs/macos.md`](docs/macos.md)).
 > **Getting started:** [`docs/humans/GETTING-STARTED.md`](docs/humans/GETTING-STARTED.md) ·
 > [Architecture & docs](docs/humans/README.md) · [Roadmap](ROADMAP.md).
 
