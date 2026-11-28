@@ -76,7 +76,8 @@ shared interfaces; the macOS backends sit next to the Linux ones and are picked 
 ## Limits
 Veil **reduces** what you reveal; it does **not** make you anonymous. Your AI account already
 identifies you to the provider, unique content (your actual code or research) can identify you,
-and images, PDFs and rich text are passed through unchanged for now.
+and PDFs are passed through unchanged for now. Images: veil strips their metadata (EXIF, GPS,
+XMP, PNG text chunks) but does not read text inside them.
 
 **Clipboard history (KDE Klipper):** after you sanitize, veil removes your *original* text from
 Klipper's history. Klipper has no "remove one entry" call, so veil rebuilds the history without it:
