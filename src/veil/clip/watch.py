@@ -80,27 +80,43 @@ def drain_stdin(stream=None, limit: int = DRAIN_LIMIT, deadline: float = DRAIN_S
 
 def run_macos(main: Callable[[list[str]], int] | None = None) -> None:
     """The resident macOS watcher (macwatch.py). Each copy runs the same code path as
-    `veil clip sanitize --auto`, in this process; its errors are already reported and failed
-    closed by that path, so the loop keeps going."""
+    `veil clip sanitize --auto`, in this process without re-parsing CLI flags or re-hardening;
+    its errors are already reported and failed closed by that path, so the loop keeps going."""
     from veil import killswitch, paths
-    from veil.clip import macwatch, pasteboard
+    from veil.clip import macwatch, notify, pasteboard
 
     if main is None:
-        from veil.cli import main
+        from veil.cli import sanitize_auto
 
-    def on_copy() -> None:
-        try:
-            main(["clip", "sanitize", "--auto"])
-        except (Exception, SystemExit):  # noqa: BLE001 - one bad copy must not end the watcher
-            return
+        def on_copy() -> None:
+            sanitize_auto()
+
+        def expire_on_clock(config, now) -> None:
+            message = killswitch.on_timer(
+                "expire", config, killswitch.detect_watcher(), killswitch.detect_timers(), now
+            )
+            if message is not None:
+                notify.detect().notify(message)
+    else:
+
+        def on_copy() -> None:
+            try:
+                main(["clip", "sanitize", "--auto"])
+            except (Exception, SystemExit):  # noqa: BLE001 - one bad copy must not end the watcher
+                return
+
+        def expire_on_clock(config, now) -> None:
+            del config, now
+            main(["kill-switch-timer", "expire"])  # switches OFF and unloads this agent
 
     def on_clock() -> bool:
         config = paths.config_dir()
+        now = killswitch.utc_now()
         switch, _ = killswitch.read_switch(config)
         if not switch.on:
             return False
-        if switch.expired(killswitch.utc_now()):
-            main(["kill-switch-timer", "expire"])  # switches OFF and unloads this agent
+        if switch.expired(now):
+            expire_on_clock(config, now)
             return False
         return True
 

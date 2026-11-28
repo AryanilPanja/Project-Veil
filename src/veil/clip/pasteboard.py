@@ -267,6 +267,7 @@ class PasteboardClipboard:
             # Markers first: a clipboard manager that reads between our calls sees them
             # before it can see any text.
             _set(board, TRANSIENT, "")
+            _set(board, AUTO_GENERATED, "")
             _set(board, CONCEALED, "")
             _set(board, SOURCE, SOURCE_NAME)
             _set(board, WRITE_UTI, text)

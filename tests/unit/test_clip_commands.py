@@ -390,6 +390,7 @@ class TestCli:
         # The real detection (conftest blocks it by default); no display is set, so it finds
         # no tool and touches nothing.
         monkeypatch.setattr(clipio, "detect", REAL_DETECT)
+        monkeypatch.setattr(clipio.sys, "platform", "linux")  # macOS always has a pasteboard
         code, _, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
         assert "no clipboard tool found" in err

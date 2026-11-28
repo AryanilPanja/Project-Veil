@@ -171,17 +171,17 @@ def desktop_entry(shortcut: Shortcut, command: Sequence[str]) -> str:
     )
 
 
-# macOS has no PRIMARY selection and veil can't press keys there yet, so only these three.
-MACOS_SHORTCUTS = ("sanitize", "restore", "toggle")
+# macOS has no PRIMARY selection; sanitize, restore, toggle, and paste (via CGEventPost) work.
+MACOS_SHORTCUTS = ("sanitize", "restore", "toggle", "paste")
 
 
 def macos_keys(keys: str) -> str:
-    """KDE's Meta+Alt+X as Control+Option+X: Command+Option+V is Finder's "move here"."""
-    return keys.replace("Meta+Alt+", "Control+Option+")
+    """KDE's Meta+Alt+X as Control+Option+X, and Alt+X as Option+X."""
+    return keys.replace("Meta+Alt+", "Control+Option+").replace("Alt+", "Option+")
 
 
 def macos_steps(command: Sequence[str], chosen: Sequence[Shortcut] = SHORTCUTS) -> list[str]:
-    """One Shortcuts.app shortcut per action (no extra software, no accessibility access)."""
+    """One Shortcuts.app shortcut per action (no extra software required)."""
     lines = [
         'Shortcuts app → New Shortcut → add "Run Shell Script", paste the command, then',
         "Shortcut Details (ⓘ) → Add Keyboard Shortcut. One shortcut per line:",
@@ -191,6 +191,158 @@ def macos_steps(command: Sequence[str], chosen: Sequence[Shortcut] = SHORTCUTS) 
             line = shlex.join([*command, *shortcut.args])
             lines.append(f"  {macos_keys(shortcut.keys):<20}{line}")
     return lines
+
+
+def macos_shortcuts_dir() -> Path:
+    return paths.data_dir() / "shortcuts"
+
+
+def shortcut_filename(shortcut: Shortcut) -> str:
+    return f"veil-{shortcut.name}.shortcut"
+
+
+def shortcut_workflow(shortcut: Shortcut, command: Sequence[str]) -> bytes:
+    """Build an unsigned Apple Shortcuts WFWorkflow binary plist for `shortcut`."""
+    import plistlib
+
+    argv = [*command, *shortcut.args]
+    for arg in argv:
+        if any(ord(c) < 0x20 or c == "\x7f" for c in arg):
+            raise ValueError("control characters can't go into a shortcut")
+    workflow = {
+        "WFWorkflowMinimumClientVersionString": "900",
+        "WFWorkflowMinimumClientVersion": 900,
+        "WFWorkflowIcon": {
+            "WFWorkflowIconStartColor": 4282601983,
+            "WFWorkflowIconGlyphNumber": 59746,
+        },
+        "WFWorkflowClientVersion": "2605.0.5",
+        "WFWorkflowOutputContentItemClasses": [],
+        "WFWorkflowHasOutputFallback": False,
+        "WFWorkflowActions": [
+            {
+                "WFWorkflowActionIdentifier": "is.workflow.actions.runshellscript",
+                "WFWorkflowActionParameters": {
+                    "Script": shlex.join(argv),
+                    "Shell": "/bin/zsh",
+                    "InputMode": "to stdin",
+                },
+            }
+        ],
+        "WFWorkflowInputContentItemClasses": [],
+        "WFWorkflowImportQuestions": [],
+        "WFWorkflowTypes": ["NCWidget", "WatchKit"],
+        "WFQuickActionSurfaces": [],
+        "WFWorkflowHasShortcutInputVariables": False,
+    }
+    return plistlib.dumps(workflow, fmt=plistlib.FMT_BINARY)
+
+
+@dataclass(frozen=True)
+class MacosExport:
+    shortcut: Shortcut
+    path: Path
+    signed: bool
+
+
+def _run_shortcuts(
+    argv: Sequence[str], *, timeout: float = 30.0
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed tool path and arguments
+        list(argv),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def macos_installed_names(
+    which: Callable[[str], str | None] = shutil.which,
+    run: Callable[..., subprocess.CompletedProcess[str]] = _run_shortcuts,
+) -> set[str] | None:
+    """Shortcut names currently registered in Shortcuts.app, or None if unavailable."""
+    exe = which("shortcuts")
+    if not exe:
+        return None
+    try:
+        done = run([exe, "list"], timeout=10.0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    return {line.strip() for line in done.stdout.splitlines() if line.strip()}
+
+
+def export_macos_shortcuts(
+    dest_dir: Path | None = None,
+    command: Sequence[str] | None = None,
+    chosen: Sequence[Shortcut] = SHORTCUTS,
+    *,
+    sign: bool = True,
+    which: Callable[[str], str | None] = shutil.which,
+    run: Callable[..., subprocess.CompletedProcess[str]] = _run_shortcuts,
+) -> list[MacosExport]:
+    """Write (and sign with `/usr/bin/shortcuts sign --mode anyone` when available) .shortcut
+    files ready to open and import in Shortcuts.app."""
+    command = veil_command() if command is None else list(command)
+    folder = macos_shortcuts_dir() if dest_dir is None else dest_dir
+    folder.mkdir(parents=True, exist_ok=True)
+    shortcuts_bin = which("shortcuts") if sign else None
+    exports: list[MacosExport] = []
+    for shortcut in chosen:
+        if shortcut.name not in MACOS_SHORTCUTS:
+            continue
+        payload = shortcut_workflow(shortcut, command)
+        target = folder / shortcut_filename(shortcut)
+        signed = False
+        if shortcuts_bin:
+            raw = folder / f".{shortcut_filename(shortcut)}.unsigned"
+            try:
+                fsutil.atomic_write(raw, payload, what="a macOS shortcut workflow")
+                done = run(
+                    [shortcuts_bin, "sign", "--mode", "anyone", "-i", str(raw), "-o", str(target)],
+                    timeout=30.0,
+                )
+                signed = done.returncode == 0 and target.is_file() and target.stat().st_size > 0
+            except (OSError, subprocess.SubprocessError):
+                signed = False
+            finally:
+                raw.unlink(missing_ok=True)
+        if not signed:
+            fsutil.atomic_write(target, payload, what="a macOS shortcut workflow")
+        target.chmod(0o644)
+        exports.append(MacosExport(shortcut, target, signed))
+    return exports
+
+
+def remove_macos_shortcuts(
+    dest_dir: Path | None = None, chosen: Sequence[Shortcut] = SHORTCUTS
+) -> list[Path]:
+    folder = macos_shortcuts_dir() if dest_dir is None else dest_dir
+    removed: list[Path] = []
+    for shortcut in chosen:
+        if shortcut.name not in MACOS_SHORTCUTS:
+            continue
+        path = folder / shortcut_filename(shortcut)
+        if path.exists():
+            path.unlink(missing_ok=True)
+            removed.append(path)
+    with contextlib.suppress(OSError):
+        folder.rmdir()
+    return removed
+
+
+def open_macos_shortcuts(paths_to_open: Sequence[Path]) -> bool:
+    """Open exported .shortcut files in Shortcuts.app for one-click import."""
+    if not paths_to_open:
+        return False
+    try:
+        argv = ["/usr/bin/open", *(str(p) for p in paths_to_open)]
+        return _run_shortcuts(argv, timeout=10.0).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def veil_command() -> list[str]:

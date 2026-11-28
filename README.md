@@ -10,8 +10,8 @@ about "Alex"; you get them back with your real details restored.
 > **Status: v0.1.0 in progress.** The encrypted persona, the translation engine, the clipboard
 > hotkeys and "veil ON" (every copy sanitized automatically) work on KDE Plasma 6 / Wayland.
 > Still to come before the release: testing on the chat sites themselves (milestone M4).
-> **macOS:** the same features except sanitize-then-paste, through the Keychain, the pasteboard
-> and launchd ([`docs/macos.md`](docs/macos.md)).
+> **macOS:** the same features (except `from-selection`), through the Keychain, the pasteboard,
+> CoreGraphics `CGEventPost`, Shortcuts.app and launchd ([`docs/macos.md`](docs/macos.md)).
 > **Getting started:** [`docs/humans/GETTING-STARTED.md`](docs/humans/GETTING-STARTED.md) ·
 > [Architecture & docs](docs/humans/README.md) · [Roadmap](ROADMAP.md).
 
@@ -63,7 +63,7 @@ same code with small platform backends ([`docs/macos.md`](docs/macos.md)).
 | Linux, other Wayland desktops (Sway, Hyprland…) | 🟡 should work with a Secret Service keyring or passphrase mode | 🟡 likely (they support `wl-clipboard`); shortcuts by hand | 🟡 should work |
 | Linux, X11 session | 🟡 core should work | ❌ not supported (needs `xclip`/`xsel` support) | 🟡 should work |
 | Linux without systemd / no `/run/user` tmpfs | ❌ `persona edit` refuses (no safe place for plaintext) | ❌ | ❌ |
-| macOS (tested on 27, Apple silicon) | ✅ tested (key in the login Keychain, plaintext on a RAM disk) | ✅ sanitize, restore and veil ON (hotkeys through Shortcuts.app, printed by `veil install-shortcuts`); no sanitize-then-paste yet | 🟡 should work (no platform-specific parts); untested |
+| macOS (tested on 27, Apple silicon) | ✅ tested (key in the login Keychain, plaintext on a RAM disk) | ✅ sanitize, restore, sanitize-then-paste (`Cmd+V`), `veil ON`, exported `.shortcut` workflows (`veil install-shortcuts --open`), menu-bar toggle (`veil menubar`) | 🟡 should work (no platform-specific parts); untested |
 | Windows | ❌ not supported yet (uses Unix-only file locking and permissions) | ❌ | ❌ |
 | WSL | ❌ untested; no desktop keyring by default | ❌ | ❌ |
 
@@ -72,27 +72,10 @@ same code with small platform backends ([`docs/macos.md`](docs/macos.md)).
 The platform-specific parts (file safety, keyring, clipboard, hotkeys) are small modules behind
 shared interfaces; the macOS backends sit next to the Linux ones and are picked at run time.
 
-## Coding agents: `veil agent-guard`
-
-```bash
-veil agent-guard install    # in a project you open with Claude Code
-```
-
-- Blocks agents from veil's key, persona, clipboard tools and kill switch, and runs their shell
-  commands in the OS sandbox.
-- Reviews the session's diff before the agent can call the task done: removed or skipped tests,
-  weakened asserts, edited expected outputs, changed evaluation or metric code, destructive git
-  commands.
-- Tells the agent that veil is active, so it keeps fake names as they are and doesn't ask for
-  real ones.
-
-Details and the incidents it is based on: [`docs/agent-guard.md`](docs/agent-guard.md).
-
 ## Limits
 Veil **reduces** what you reveal; it does **not** make you anonymous. Your AI account already
 identifies you to the provider, unique content (your actual code or research) can identify you,
-and PDFs are passed through unchanged for now. Images: veil strips their metadata (EXIF, GPS,
-XMP, PNG text chunks) but does not read text inside them.
+and images, PDFs and rich text are passed through unchanged for now.
 
 **Clipboard history (KDE Klipper):** after you sanitize, veil removes your *original* text from
 Klipper's history. Klipper has no "remove one entry" call, so veil rebuilds the history without it:

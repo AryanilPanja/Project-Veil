@@ -97,6 +97,31 @@ def test_watch_run_on_macos_does_not_need_wayland(monkeypatch):
     assert called == [True]
 
 
+def test_run_macos_fast_path_skips_cli_main(monkeypatch, copy_watcher, switch_timers):
+    from veil import cli, paths
+    from veil.clip import pasteboard
+
+    now = killswitch.utc_now()
+    killswitch.switch_on(paths.config_dir(), copy_watcher, switch_timers, now)
+
+    counts = iter([1, 2, 2])
+    auto_calls: list[int] = []
+
+    def fake_sanitize_auto(**_k):
+        auto_calls.append(1)
+        killswitch.switch_off(paths.config_dir(), copy_watcher, switch_timers)
+        return 0
+
+    monkeypatch.setattr(pasteboard, "change_count", lambda: next(counts))
+    monkeypatch.setattr(cli, "sanitize_auto", fake_sanitize_auto)
+    monkeypatch.setattr(cli, "main", lambda *_a: pytest.fail("cli.main must not run per copy"))
+    monkeypatch.setattr(macwatch, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(macwatch, "CLOCK_CHECK_SECONDS", 0.0)
+    monkeypatch.setattr(macwatch.time, "sleep", lambda _s: None)
+    watch.run_macos()
+    assert auto_calls == [1]
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="CoreGraphics is macOS only")
 def test_idle_seconds_reads_core_graphics():
     assert macwatch.idle_seconds() >= 0.0

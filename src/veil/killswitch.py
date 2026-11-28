@@ -537,8 +537,13 @@ def switch_on(
     stays OFF: never "ON" without protection). Returns (switch, end timer scheduled)."""
     if not watcher.start():
         watcher.stop()
+        service = (
+            f"launchd agent {LAUNCHD_LABEL}"
+            if sys.platform == "darwin"
+            else "systemd user service veil-watch"
+        )
         raise VeilError(
-            "the copy watcher didn't start (systemd user service veil-watch); veil stays OFF",
+            f"the copy watcher didn't start ({service}); veil stays OFF",
             exit_code=ExitCode.UNSAFE_ENVIRONMENT,
         )
     switch = Switch(True, now, None if duration is None else now + duration)
@@ -587,9 +592,10 @@ def on_message(switch: Switch, now: datetime) -> Message:
         until = f"Until {_local(switch.until)} ({describe_duration(switch.until - now)}). "
     else:
         until = "Until you switch it off. "
+    paste_key = "Cmd+V" if sys.platform == "darwin" else "Ctrl+V"
     return Message(
         "veil ON",
-        f"Every copy is sanitized: Ctrl+V pastes the sanitized text.\n{until}{toggle_hint()}",
+        f"Every copy is sanitized: {paste_key} pastes the sanitized text.\n{until}{toggle_hint()}",
         icon="security-high",
     )
 
@@ -606,10 +612,15 @@ def off_message(*, expired: bool = False) -> Message:
 
 
 def down_message() -> Message:
+    why = (
+        f"(`launchctl print gui/{os.getuid()}/{LAUNCHD_LABEL}` shows why.)"
+        if sys.platform == "darwin"
+        else "(`journalctl --user -u veil-watch` shows why.)"
+    )
     return Message(
         "veil isn't running",
         "veil should be ON, but the copy watcher stopped: copies are NOT sanitized.\n"
-        f"{toggle_hint()} (`journalctl --user -u veil-watch` shows why.)",
+        f"{toggle_hint()} {why}",
         Urgency.CRITICAL,
         icon="dialog-warning",
     )

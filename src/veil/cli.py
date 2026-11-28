@@ -132,13 +132,17 @@ def build_parser() -> argparse.ArgumentParser:
             help="switch OFF by itself after this long (e.g. 30m, 2h; up to 24h)",
         )
     commands.add_parser("status", help="ON or OFF (exit 0 = on, 3 = off)")
+    commands.add_parser(
+        "menubar",
+        help="macOS: show ON / OFF status and toggle in the menu bar" if mac else argparse.SUPPRESS,
+    )
     timer = commands.add_parser("kill-switch-timer")  # run by systemd timers; not listed
     timer.add_argument("event", choices=("expire", "remind", "stopped", "check"))
 
     shortcuts = commands.add_parser(
         "install-shortcuts",
         help=(
-            "print the Shortcuts.app steps for the hotkeys (Control+Option+V/E/K)"
+            "export Shortcuts.app workflows & print hotkeys (Control+Option+V/E/K, Option+V)"
             if mac
             else "KDE Plasma: set up the hotkeys (Meta+Alt+V/C/E/K, Alt+V, Alt+Shift+V)"
         ),
@@ -150,11 +154,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="NAME=KEYS",
         help=(
             "use another key, e.g. --key restore=Meta+Alt+X (shown as Control+Option+X; "
-            "names: sanitize, restore, toggle; repeatable)"
+            "names: sanitize, restore, toggle, paste; repeatable)"
             if mac
             else "use another key, e.g. --key restore=Meta+Alt+X (names: sanitize, "
             "from-selection, restore, toggle, paste, paste-terminal; repeatable)"
         ),
+    )
+    shortcuts.add_argument(
+        "--open",
+        action="store_true",
+        dest="open_files",
+        help="macOS: open the exported .shortcut files in Shortcuts.app to import them",
     )
     mode = shortcuts.add_mutually_exclusive_group()
     mode.add_argument("--remove", action="store_true", help="remove veil's hotkeys again")
@@ -164,7 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument(
         "--status",
         action="store_true",
-        help="KDE: show what is installed and which key KDE really has (read-only)",
+        help="show which shortcuts are installed / exported (read-only)",
     )
 
     paste = clip_commands.choices["paste"]
@@ -269,6 +279,11 @@ def run(argv: Sequence[str] | None) -> int:
         return _text_command(args)
     if args.command == "install-shortcuts":
         return _shortcuts_command(args)
+    if args.command == "menubar":
+        from veil.clip import menubar
+
+        menubar.run()
+        return int(ExitCode.OK)
     if args.command in ("on", "off", "toggle", "status", "kill-switch-timer"):
         return _switch_command(args)
     if args.command == "clip" and args.clip_command:
@@ -460,10 +475,12 @@ def _shortcuts_command(args: argparse.Namespace) -> int:
         chosen = shortcuts.with_keys(overrides)
     except (ValueError, KeyError) as exc:
         raise VeilError(f"--key: {exc}", exit_code=ExitCode.USAGE) from None
-    if args.print or sys.platform == "darwin":  # macOS: no API to add them; print the steps
+    if args.print:
         for line in shortcuts.manual_steps(chosen=chosen):
             ui.out(line)
         return int(ExitCode.OK)
+    if sys.platform == "darwin":
+        return _macos_shortcuts_command(args, chosen, shortcuts)
     bus = shortcuts.JeepneyShortcuts() if os.environ.get("DBUS_SESSION_BUS_ADDRESS") else None
     try:
         if bus is not None and not _bus_running(bus):
@@ -511,6 +528,46 @@ def _shortcuts_command(args: argparse.Namespace) -> int:
     return int(ExitCode.OK)
 
 
+def _macos_shortcuts_command(args: argparse.Namespace, chosen, shortcuts) -> int:
+    if args.remove:
+        removed = shortcuts.remove_macos_shortcuts(chosen=chosen)
+        ui.out(f"veil: removed {len(removed)} exported shortcut file(s)")
+        return int(ExitCode.OK)
+    if args.status:
+        folder = shortcuts.macos_shortcuts_dir()
+        installed_names = shortcuts.macos_installed_names()
+        all_ok = True
+        for s in chosen:
+            if s.name not in shortcuts.MACOS_SHORTCUTS:
+                continue
+            path = folder / shortcuts.shortcut_filename(s)
+            exported = path.is_file()
+            in_app = (
+                "in Shortcuts.app"
+                if installed_names is not None and f"veil-{s.name}" in installed_names
+                else "exported"
+                if exported
+                else "missing"
+            )
+            if not exported:
+                all_ok = False
+            ui.out(f"  {s.name:<10} {shortcuts.macos_keys(s.keys):<20} {in_app}")
+        return int(ExitCode.OK if all_ok else ExitCode.FINDINGS)
+    exports = shortcuts.export_macos_shortcuts(chosen=chosen)
+    ui.out(f"Exported Shortcuts.app workflows to {shortcuts.macos_shortcuts_dir()}:")
+    for item in exports:
+        badge = "signed" if item.signed else "unsigned"
+        ui.out(f"  {shortcuts.macos_keys(item.shortcut.keys):<20} {item.path.name} ({badge})")
+    if args.open_files:
+        shortcuts.open_macos_shortcuts([item.path for item in exports])
+    else:
+        ui.out(
+            "Run `veil install-shortcuts --open` (or open the .shortcut files) to import them "
+            "into Shortcuts.app, then assign each keyboard shortcut in Shortcut Details."
+        )
+    return int(ExitCode.OK)
+
+
 def _bus_running(bus) -> bool:
     try:
         return bus.running()
@@ -518,62 +575,100 @@ def _bus_running(bus) -> bool:
         return False
 
 
-def _clip_command(args: argparse.Namespace) -> int:
-    started = time.monotonic()  # ≈ the hotkey press (paste waits for its keys to be up)
-    from veil.clip import commands, history, messages, notify, watch
+def _execute_clip(
+    clip_command: str,
+    *,
+    auto: bool = False,
+    no_notify: bool = False,
+    terminal: bool = False,
+    started: float | None = None,
+) -> int:
+    from veil.clip import commands, history, messages, notify
     from veil.clip.io import detect
     from veil.engine.load import load_engine
     from veil.timing import STAGES
 
-    if args.clip_command == "watch":
-        watch.run()  # replaces this process with wl-paste --watch
-        return int(ExitCode.OK)  # only when execv is faked (tests)
+    if started is None:
+        started = time.monotonic()
 
     def load():
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
-    auto = args.clip_command == "sanitize" and args.auto
-    if auto:
-        watch.drain_stdin()
     board = None
     try:
         board = detect()
-        if args.clip_command == "restore":
+        if clip_command == "restore":
             outcome = commands.restore(board, load)
-        elif args.clip_command == "from-selection":
-            outcome = commands.from_selection(board, load, _asker(args.no_notify), history.detect())
+        elif clip_command == "from-selection":
+            outcome = commands.from_selection(board, load, _asker(no_notify), history.detect())
         else:  # sanitize, paste
             # No history rebuild inside watcher runs: its re-adds are clipboard changes that
             # would wake the watcher again. Picking an entry from the history while veil is ON
             # is itself a copy, so it gets sanitized anyway (sweep 2026-10-26).
             forget = None if auto else history.detect()
-            outcome = commands.sanitize(board, load, _asker(args.no_notify), forget, auto=auto)
+            outcome = commands.sanitize(board, load, _asker(no_notify), forget, auto=auto)
     except (Exception, KeyboardInterrupt) as error:
         # Fail closed (M2.5, spec §4.4), then let `main` report the error and pick the exit code.
-        scrub = None if args.clip_command == "restore" else commands.fail_closed(board)
+        scrub = None if clip_command == "restore" else commands.fail_closed(board)
         ui.err(messages.error_line(scrub))
-        if not args.no_notify:
+        if not no_notify:
             notify.detect().notify(messages.error_notification(messages.error_detail(error), scrub))
         raise
-    if args.clip_command == "paste":
+    if clip_command == "paste":
         from veil.clip import paste
 
         if paste.should_paste(outcome):
             outcome = dataclasses.replace(
                 outcome,
                 pasted=paste.inject(
-                    paste.chord(args.terminal), config=paths.config_dir(), started=started
+                    paste.chord(terminal), config=paths.config_dir(), started=started
                 ),
             )
     for line in messages.stderr_lines(outcome):
         ui.err(line)
-    if not args.no_notify and messages.worth_notifying(outcome, auto=auto):
+    if not no_notify and messages.worth_notifying(outcome, auto=auto):
         notify.detect().notify(messages.notification(outcome))
     if auto:
-        _end_if_due(args.no_notify)
+        _end_if_due(no_notify)
     STAGES.report()
     return int(ExitCode.OK)
+
+
+def sanitize_auto(*, no_notify: bool = False) -> int:
+    """Resident-watcher entry point for auto-sanitizing one clipboard copy without re-parsing
+    CLI flags or re-hardening the process."""
+    try:
+        return _execute_clip("sanitize", auto=True, no_notify=no_notify)
+    except VeilError as error:
+        ui.report_error(error)
+        return int(error.exit_code)
+    except KeyboardInterrupt:
+        ui.err("veil: interrupted")
+        return int(ExitCode.INTERRUPTED)
+    except Exception as exc:  # noqa: BLE001 - last line of defence: never print exception text
+        ui.report_internal_error(type(exc))
+        return int(ExitCode.INTERNAL)
+
+
+def _clip_command(args: argparse.Namespace) -> int:
+    started = time.monotonic()  # ≈ the hotkey press (paste waits for its keys to be up)
+    from veil.clip import watch
+
+    if args.clip_command == "watch":
+        watch.run()  # replaces this process with wl-paste --watch (or runs macwatch on macOS)
+        return int(ExitCode.OK)  # only when execv is faked (tests)
+
+    auto = args.clip_command == "sanitize" and args.auto
+    if auto:
+        watch.drain_stdin()
+    return _execute_clip(
+        args.clip_command,
+        auto=auto,
+        no_notify=args.no_notify,
+        terminal=getattr(args, "terminal", False),
+        started=started,
+    )
 
 
 def _end_if_due(no_notify: bool) -> None:

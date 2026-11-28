@@ -10,12 +10,14 @@ shared, and a fix in one is a fix in both.
 uv tool install git+https://github.com/VA24d/veil-macos   # or: uv sync in a clone
 veil persona import persona.yaml     # encrypts it; the key goes into the login Keychain
 veil on                              # starts the copy watcher (a launchd agent)
-veil install-shortcuts               # prints the Shortcuts.app steps for the hotkeys
+veil install-shortcuts --open        # exports & signs .shortcut workflows for Shortcuts.app
+veil menubar                         # optional: menu-bar status item (veil ON / OFF)
 ```
 
 - Tested on macOS 27 on Apple silicon. Older versions are untested.
 - Python 3.13 (uv installs it). Nothing else to install: the Keychain, the pasteboard,
-  notifications and the RAM disk are reached through frameworks and tools that ship with macOS.
+  notifications, key injection, the menu bar and the RAM disk are reached through frameworks and
+  tools that ship with macOS.
 - Notifications come from "Script Editor". Allow them in System Settings > Notifications >
   Script Editor, or veil's banners stay silent. The ask-before-send dialog appears either way.
 
@@ -29,10 +31,12 @@ veil install-shortcuts               # prints the Shortcuts.app steps for the ho
 | systemd user service `veil-watch` | launchd agent `io.github.veil.watch` | `killswitch.py` |
 | systemd timers end a timed ON | the watcher checks the clock every 30 s | `killswitch.py` |
 | `notify-send` (banners, buttons) | `osascript`: `display notification`, `display dialog` | `clip/macnotify.py` |
+| XDG Desktop Portal `RemoteDesktop` | CoreGraphics `CGEventPost` (`Cmd+V`, Accessibility) | `clip/macpaste.py` |
+| — | `NSStatusBar` menu-bar status & toggle (`veil menubar`) | `clip/menubar.py` |
 | `/run/user/<uid>` tmpfs for plaintext | 16 MiB `ram://` disk in the per-user temp dir | `ramdisk.py` |
 | `prctl(PR_SET_DUMPABLE, 0)` | `ptrace(PT_DENY_ATTACH)` | `hardening.py` |
 | zram / dm-crypt swap check | always encrypted (macOS default since 10.7) | `paths.py` |
-| KDE global shortcuts | Shortcuts.app, one shortcut per action | `shortcuts.py` |
+| KDE global shortcuts | signed `.shortcut` workflows for Shortcuts.app | `shortcuts.py` |
 
 - Klipper history cleanup has no macOS counterpart.
 - veil marks its writes with the [nspasteboard.org](http://nspasteboard.org) types
@@ -48,7 +52,7 @@ veil install-shortcuts               # prints the Shortcuts.app steps for the ho
     cache 2 ms, translating 3 ms).
   - Loading AppKit through ctypes: 0.9 ms. One `changeCount` read: 0.6 to 1.6 µs.
 - A Swift or Rust rewrite would save part of the 50 ms start-up and would split the code base
-  in two. The resident watcher takes the start-up off the copy path instead.
+  in two. The resident watcher takes the start-up and CLI parsing off the copy path instead.
 - ctypes instead of pyobjc: pyobjc costs about 100 ms of imports and a large dependency. veil
   needs about 15 calls, simple enough to declare by hand.
 - No `security` or `pbpaste` subprocesses on the hot path. `security add-generic-password -w`
@@ -59,12 +63,13 @@ veil install-shortcuts               # prints the Shortcuts.app steps for the ho
 - `veil on` writes `~/Library/LaunchAgents/io.github.veil.watch.plist` and loads it. `veil off`
   unloads it and deletes the plist, so nothing starts at the next login while veil is OFF.
 - The watcher reads `NSPasteboard.changeCount` every 0.25 s while the keyboard or mouse was
-  used in the last minute, and every 1 s after that. When the counter moves it runs a sanitize
+  used in the last minute, and every 1 s after that. When the counter moves it sanitizes directly
   in the same process, then re-reads the counter, so its own write never triggers another run.
 - Battery: a poll is one Objective-C message; the process sleeps the rest of the time. Idle
   time comes from CoreGraphics and needs no Accessibility permission.
 - Window: a paste within 0.25 s of a copy (1 s after an idle minute) can still carry the
-  original. Press the sanitize hotkey before pasting into a chat if that matters to you.
+  original. Press the sanitize hotkey (or sanitize-and-paste `Option+V`) before pasting into a
+  chat if that matters to you.
 - Nothing stays in memory between copies: each sanitize loads the engine from the encrypted
   cache and drops it.
 - A crash: launchd restarts the agent. A clean exit (veil OFF, or the ON time is up) stays
@@ -95,9 +100,10 @@ VEIL_TEST_KEYCHAIN=1 VEIL_TEST_PASTEBOARD=1 VEIL_TEST_RAMDISK=1 \
 The opt-in tests use synthetic values and clean up after themselves. The pasteboard test
 replaces your clipboard.
 
-## Not done yet
+## Notes & permissions
 
-- Sanitize-then-paste (`veil clip paste`) and sanitize-the-selection need synthetic key presses
-  (CGEventPost), which need the Accessibility permission.
-- A signed menu-bar app. See [release.md](release.md).
+- Sanitize-then-paste (`veil clip paste`) uses CoreGraphics `CGEventPost` (`Cmd+V`) after waiting
+  for the hotkey modifiers to release, which requires granting your terminal or Shortcuts Runner
+  Accessibility permission in System Settings > Privacy & Security > Accessibility.
+- `from-selection` (Wayland/X11 `PRIMARY` selection) has no macOS equivalent.
 - CI runs the suite on `macos-latest`; the opt-in tests above run only on a real Mac.

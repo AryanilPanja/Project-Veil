@@ -105,11 +105,17 @@ class TestErrorsHideText:
         assert board.read(Selection.PRIMARY) == ClipContent(Kind.EMPTY)
         board.clear(Selection.PRIMARY)  # a no-op
 
-    def test_unencodable_text_error_has_no_text(self):
+    def test_unencodable_text_error_has_no_text(self, monkeypatch):
         bad = "Jane Doe \ud800"  # a lone surrogate cannot be UTF-8
-        with pytest.raises(ClipboardError) as caught:
-            pasteboard._ns_string(bad) if sys.platform == "darwin" else bad.encode("utf-8")
-        assert "Jane" not in str(caught.value)
+        for platform in ("darwin", "linux"):
+            monkeypatch.setattr(sys, "platform", platform)
+            pasteboard._runtime.cache_clear()
+            try:
+                with pytest.raises(ClipboardError) as caught:
+                    pasteboard._ns_string(bad)
+            finally:
+                pasteboard._runtime.cache_clear()
+            assert "Jane" not in str(caught.value)
 
     def test_non_darwin_runtime_error_is_fixed(self, monkeypatch):
         monkeypatch.setattr(sys, "platform", "linux")
@@ -167,6 +173,7 @@ class TestRealPasteboard:
         assert {
             "public.utf8-plain-text",
             "org.nspasteboard.TransientType",
+            pasteboard.AUTO_GENERATED,
             CONCEALED,
             "org.nspasteboard.source",
         } <= set(utis)

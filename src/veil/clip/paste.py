@@ -9,17 +9,20 @@ Ctrl+Alt+V; Wayland can't tell veil, so the paste waits until RELEASE_WAIT after
 """
 
 import contextlib
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-from veil.clip import portal
+from veil.clip import macpaste, portal
 from veil.clip.commands import Outcome, Pasted
 
 RELEASE_WAIT = 0.35  # seconds after the key press before veil presses its own keys
 
 
 def chord(terminal: bool) -> str:
+    if sys.platform == "darwin":
+        return "cmd+v"
     return "ctrl+shift+v" if terminal else "ctrl+v"
 
 
@@ -36,8 +39,13 @@ def inject(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Pasted:
-    """Press `chord_name` through the portal. Never raises: the clipboard is already right, so a
-    failed paste only means "press Ctrl+V yourself"."""
+    """Press `chord_name` through the platform input mechanism.
+
+    Never raises: the clipboard is already sanitized, so a failed paste only means
+    "press Ctrl+V / Cmd+V yourself".
+    """
+    if keyboard_factory is None and sys.platform == "darwin" and chord_name in macpaste.CHORDS:
+        return _inject_macos(chord_name, started=started, clock=clock, sleep=sleep)
     keys = portal.CHORDS[chord_name]
     keyboard = (keyboard_factory or portal.RemoteKeyboard)()  # looked up now: tests replace it
     try:
@@ -51,6 +59,28 @@ def inject(
     except portal.Refused:
         return Pasted.REFUSED
     except Exception:  # noqa: BLE001 - portal or D-Bus trouble: report, don't raise
+        return Pasted.FAILED
+    finally:
+        keyboard.close()
+    return Pasted.PASTED
+
+
+def _inject_macos(
+    chord_name: str,
+    *,
+    started: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> Pasted:
+    keys = macpaste.CHORDS[chord_name]
+    keyboard = macpaste.MacKeyboard()
+    try:
+        keyboard.open()
+        macpaste.wait_for_modifiers(started + RELEASE_WAIT, clock=clock, sleep=sleep)
+        keyboard.press(keys)
+    except macpaste.Refused:
+        return Pasted.REFUSED
+    except Exception:  # noqa: BLE001 - Accessibility or CGEvent error: report, don't raise
         return Pasted.FAILED
     finally:
         keyboard.close()

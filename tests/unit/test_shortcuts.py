@@ -711,13 +711,64 @@ def test_macos_manual_steps_use_shortcuts_app(monkeypatch):
     body = "\n".join(lines)
     assert "Run Shell Script" in body
     assert "Control+Option+V    '/p y/python' -m veil clip sanitize" in body
-    assert "clip paste" not in body
+    assert "Option+V            '/p y/python' -m veil clip paste" in body
     assert "from-selection" not in body
 
 
-def test_macos_cli_prints_steps_and_succeeds(monkeypatch, capsys):
-    from veil import cli
+def test_macos_cli_exports_workflows_and_prints_steps(monkeypatch, capsys):
+    from veil import cli, shortcuts
 
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(
+        shortcuts.shutil,
+        "which",
+        lambda name: "/usr/bin/shortcuts" if name == "shortcuts" else None,
+    )
     assert cli.main(["install-shortcuts"]) == 0
-    assert "Shortcuts app" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Shortcuts.app" in out
+    assert "veil-sanitize.shortcut" in out
+    assert "veil-paste.shortcut" in out
+    folder = shortcuts.macos_shortcuts_dir()
+    assert (folder / "veil-sanitize.shortcut").is_file()
+    assert (folder / "veil-paste.shortcut").is_file()
+
+    opened: list[list[str]] = []
+    monkeypatch.setattr(
+        shortcuts,
+        "open_macos_shortcuts",
+        lambda paths: opened.append([p.name for p in paths]) or True,
+    )
+    assert cli.main(["install-shortcuts", "--open"]) == 0
+    assert len(opened) == 1
+    assert set(opened[0]) == {
+        "veil-sanitize.shortcut",
+        "veil-restore.shortcut",
+        "veil-toggle.shortcut",
+        "veil-paste.shortcut",
+    }
+
+    assert cli.main(["install-shortcuts", "--status"]) == 0
+    status_out = capsys.readouterr().out
+    assert "exported" in status_out
+
+    assert cli.main(["install-shortcuts", "--remove"]) == 0
+    assert not (folder / "veil-sanitize.shortcut").exists()
+
+    assert cli.main(["install-shortcuts", "--print"]) == 0
+    assert "Run Shell Script" in capsys.readouterr().out
+    assert not (folder / "veil-sanitize.shortcut").exists()
+
+
+def test_macos_shortcut_workflow_is_valid_binary_plist():
+    import plistlib
+
+    payload = shortcuts.shortcut_workflow(shortcuts.TOGGLE, ["/p y/python", "-m", "veil"])
+    doc = plistlib.loads(payload)
+    actions = doc["WFWorkflowActions"]
+    assert len(actions) == 1
+    assert actions[0]["WFWorkflowActionIdentifier"] == "is.workflow.actions.runshellscript"
+    assert (
+        "'/p y/python' -m veil toggle --from-hotkey"
+        in actions[0]["WFWorkflowActionParameters"]["Script"]
+    )

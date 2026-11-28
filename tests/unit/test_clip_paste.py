@@ -4,6 +4,8 @@ conftest's `portal_keyboard` records every chord instead of typing (and zeroes t
 wait). Synthetic persona, in-memory clipboard.
 """
 
+import sys
+
 import pytest
 
 from tests.unit.test_clip_commands import FAKE, FAKES, REAL, assert_no_reals, run
@@ -15,6 +17,13 @@ from veil.clip.commands import Action, Outcome, Pasted, Skip
 from veil.clip.io import Selection
 from veil.clip.notify import Urgency
 from veil.exitcodes import ExitCode
+
+
+@pytest.fixture(autouse=True)
+def _linux(monkeypatch):
+    """These tests cover the Wayland portal path; macOS CGEventPost has test_macpaste.py."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
 
 CTRL_V = portal.CHORDS["ctrl+v"]
 CTRL_SHIFT_V = portal.CHORDS["ctrl+shift+v"]
