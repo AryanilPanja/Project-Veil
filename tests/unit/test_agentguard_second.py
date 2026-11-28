@@ -506,3 +506,23 @@ def test_doctor_command_exits_findings_on_warnings(monkeypatch, tmp_path, capsys
     out = capsys.readouterr().out
     assert "warn  agent-guard hooks missing" in out
     assert "second-model review is off" in out
+
+
+def test_doctor_warns_when_hook_interpreter_or_notice_blocks_are_missing(tmp_path):
+    from veil.agentguard.install import install_settings
+
+    project = merge_settings({}, load_template())
+    project["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = (
+        "/nonexistent/venv/bin/python -m veil agent-guard hook pre || exit 2"
+    )
+    warns = [c.message for c in doctor.guard_checks(project) if c.level == "warn"]
+    assert any("interpreter missing for PreToolUse" in w for w in warns)
+
+    install_settings(tmp_path)
+    installed = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    assert [c.level for c in doctor.notice_checks(tmp_path, installed)] == ["ok"]
+    (tmp_path / "AGENTS.md").unlink()
+    notice_warns = [
+        c.message for c in doctor.notice_checks(tmp_path, installed) if c.level == "warn"
+    ]
+    assert notice_warns == ["veil notice block missing in AGENTS.md: run install"]

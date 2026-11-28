@@ -4,12 +4,19 @@ Hooks for Claude Code that keep a coding agent away from veil's secrets and flag
 make tests, checks or ML evaluation pass without the code working.
 
 ```bash
-veil agent-guard install              # in the project; --warn asks instead of blocking
+veil agent-guard install --warn       # recommended first step: ask instead of blocking
+veil agent-guard install              # strict mode: block protected actions outright
+veil agent-guard install --print      # preview the merged settings JSON without writing
 veil agent-guard review               # the same diff review, by hand or in CI (--json)
-veil agent-guard review --second      # plus the second-model review (below)
+veil agent-guard review --second      # plus the second-model review (off by default; below)
 veil agent-guard doctor               # check the guard, telemetry and transcript retention
-veil agent-guard uninstall
+veil agent-guard uninstall            # remove hooks and project notice blocks
 ```
+
+Start with `veil agent-guard install --warn` when trying the guard on a repository. In
+`--warn` mode, pre-tool rule matches prompt Claude Code to ask for your confirmation instead
+of silently denying (invalid/unparseable hook input still fails closed), and you can switch
+to `veil agent-guard install` once you know the rules fit your workflow.
 
 ## What install changes
 
@@ -31,6 +38,28 @@ veil agent-guard uninstall
   clipboard. Re-installing replaces the block; the rest of the file is untouched.
 - The hooks call the interpreter that ran `install` by absolute path, so they work when
   `veil` is not on PATH. If the pre-tool hook can't start, it blocks.
+
+## What is sent where
+
+| Feature | Sends anything? | Destination and contents |
+|---|---|---|
+| `install` / hooks / `review` | **Local only** | Never leaves your machine. Writes `.claude/settings.json`, `CLAUDE.md`, `AGENTS.md`, and logs locally (`~/Library/Logs/veil/` on macOS, `~/.local/state/veil/` on Linux). |
+| Telemetry opt-outs in `env` | **Reduces uploads** | Turns off Claude Code metrics, error reports, session surveys, and `/feedback` / `/bug` / `/share` transcript uploads for the project. |
+| `[second_review]` / `--second` | **Off by default** | Only when configured in `.veil-agent-guard.toml` or invoked with `--second`: sends the redacted `git diff` (and typed session requests / final reply when `send_task = true`) to Gemini via `agy`. |
+
+## Uninstalling cleanly
+
+```bash
+veil agent-guard uninstall            # or --project /path/to/repo
+```
+
+- Removes all veil `SessionStart`, `PreToolUse`, `PostToolUse` and `Stop` hook entries from
+  `.claude/settings.json` while leaving your own hooks intact.
+- Removes the `<!-- veil:begin --> ... <!-- veil:end -->` notice block from `CLAUDE.md` and
+  `AGENTS.md` (and deletes those files if they become empty).
+- Leaves `.claude/settings.json`'s `permissions`, `sandbox` and `env` entries in place so your
+  existing security rules aren't silently stripped; remove those keys from
+  `.claude/settings.json` by hand if you want a completely blank settings file.
 
 ## The hooks
 

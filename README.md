@@ -76,7 +76,9 @@ shared interfaces; the macOS backends sit next to the Linux ones and are picked 
 ## Coding agents: `veil agent-guard`
 
 ```bash
-veil agent-guard install    # in a project you open with Claude Code
+veil agent-guard install --warn  # recommended first step: ask instead of blocking
+veil agent-guard install         # strict blocking mode
+veil agent-guard uninstall       # remove hooks and project notice blocks
 ```
 
 - Blocks agents from veil's key, persona, clipboard tools and kill switch, and runs their shell

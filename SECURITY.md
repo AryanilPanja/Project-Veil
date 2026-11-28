@@ -24,7 +24,10 @@ veil's job is to keep real personal details out of text that leaves the machine.
 - Real details written anywhere outside the encrypted store and the in-memory runtime
   directory (tmpfs on Linux, the RAM disk on macOS): logs, notifications, error messages,
   temp files, shell history.
-- Reading the key or persona without the user's consent: other local users or a debugger.
+- Reading the key or persona without the user's consent: other local users, a debugger, a
+  coding agent running under `veil agent-guard`.
+- A way for a coding agent to get around `veil agent-guard` (a denied command or edit that
+  runs anyway, or a review that misses a removed test).
 
 Out of scope, documented limits:
 

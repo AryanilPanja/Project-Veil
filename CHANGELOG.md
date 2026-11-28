@@ -16,7 +16,10 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
   - notifications, the ask-before-send dialog and the OFF confirmation through `osascript`;
   - plaintext for `veil persona edit` on a verified `ram://` RAM disk;
   - debugger attach denied with `ptrace(PT_DENY_ATTACH)`;
-  - Shortcuts.app steps for the hotkeys.
+  - signed `.shortcut` workflow export for Shortcuts.app (`veil install-shortcuts --open`);
+  - sanitize-then-paste (`veil clip paste`) via CoreGraphics `CGEventPost` (`Cmd+V`, with Accessibility check and modifier-release wait);
+  - menu-bar status and quick-toggle accessory app (`veil menubar`) via AppKit `NSStatusBar` over ctypes.
+- `veil audit --format json`: machine-readable value-free JSON findings (`line`, `column`, `path`, `kind`).
 - `veil agent-guard`: Claude Code hooks that block coding agents from veil's key, persona,
   clipboard and kill switch, and review their diffs for removed or weakened tests, changed
   evaluation code and destructive git commands (`docs/agent-guard.md`).
@@ -29,12 +32,13 @@ Changes in the veil-macos fork of Project Veil by Aryanil Panja.
   sends the agent back once. Secret files and secret-looking values are removed first.
 - `veil agent-guard install` sets `DISABLE_TELEMETRY`, `DISABLE_ERROR_REPORTING`,
   `CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY` and `DISABLE_FEEDBACK_COMMAND` for the project.
-- `veil agent-guard doctor`: checks the hooks, sandbox, telemetry opt-outs, OpenTelemetry
+- `veil agent-guard doctor`: checks the hooks (including interpreter path existence and
+  `CLAUDE.md`/`AGENTS.md` notice blocks), sandbox, telemetry opt-outs, OpenTelemetry
   prompt export, transcript retention (`cleanupPeriodDays`) and the second reviewer.
 - `SECURITY.md`, `CONTRIBUTING.md`, `docs/release.md`.
 - An ASCII banner for interactive `veil` and `veil --help`.
 - Images on the clipboard lose their metadata (EXIF, GPS, XMP, PNG text chunks, data after the
-  image end); TIFF, HEIC and GIF on macOS are converted to PNG first.
+  image end); TIFF, HEIC and GIF on macOS are converted to PNG first (baking EXIF orientation into pixels).
 - Copies offered only as HTML or RTF are converted to plain text and sanitized.
 
 ### Changed

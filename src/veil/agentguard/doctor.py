@@ -6,6 +6,8 @@ changes nothing. Each line is `ok`, `warn` or `info`; any `warn` gives exit code
 
 import json
 import os
+import shlex
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,7 +18,10 @@ from veil.exitcodes import ExitCode
 
 _MAX_SETTINGS_BYTES = 1_048_576
 _HOOK_MARK = " -m veil agent-guard hook "
+_VEIL_HOOK_PREFIX = "veil agent-guard hook "
 _HOOK_EVENTS = ("SessionStart", "PreToolUse", "PostToolUse", "Stop")
+_NOTICE_FILES = ("CLAUDE.md", "AGENTS.md")
+_NOTICE_BEGIN = "<!-- veil:begin -->"
 _DEFAULT_CLEANUP_DAYS = 30
 
 # Each turns off one thing Claude Code sends to Anthropic (code.claude.com/docs/en/data-usage).
@@ -66,16 +71,34 @@ def effective_env(layers: list[dict[str, Any]], environ: dict[str, str]) -> dict
     return merged
 
 
-def _has_veil_hook(entries: object) -> bool:
+def _veil_hook_commands(entries: object) -> list[str]:
     if not isinstance(entries, list):
-        return False
+        return []
+    commands: list[str] = []
     for entry in entries:
         hooks = entry.get("hooks") if isinstance(entry, dict) else None
-        if isinstance(hooks, list) and any(
-            isinstance(h, dict) and _HOOK_MARK in str(h.get("command", "")) for h in hooks
-        ):
-            return True
-    return False
+        if not isinstance(hooks, list):
+            continue
+        for h in hooks:
+            if not isinstance(h, dict):
+                continue
+            cmd = str(h.get("command", ""))
+            if _HOOK_MARK in cmd or cmd.startswith(_VEIL_HOOK_PREFIX):
+                commands.append(cmd)
+    return commands
+
+
+def _hook_executable_ok(command: str) -> bool:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    if not tokens:
+        return False
+    exe = tokens[0]
+    if "/" not in exe and "\\" not in exe:
+        return shutil.which(exe) is not None
+    return Path(exe).is_file()
 
 
 def _table(settings: dict[str, Any], key: str) -> dict[str, Any]:
@@ -85,12 +108,23 @@ def _table(settings: dict[str, Any], key: str) -> dict[str, Any]:
 
 def guard_checks(project: dict[str, Any]) -> list[Check]:
     hooks = _table(project, "hooks")
-    missing = [e for e in _HOOK_EVENTS if not _has_veil_hook(hooks.get(e))]
+    by_event = {e: _veil_hook_commands(hooks.get(e)) for e in _HOOK_EVENTS}
+    missing = [e for e, cmds in by_event.items() if not cmds]
+    broken = [
+        e for e, cmds in by_event.items() if cmds and not any(_hook_executable_ok(c) for c in cmds)
+    ]
     checks = [
         Check("ok", "agent-guard hooks installed")
         if not missing
         else Check("warn", f"agent-guard hooks missing for {', '.join(missing)}: run install")
     ]
+    if broken:
+        checks.append(
+            Check(
+                "warn",
+                f"agent-guard hook interpreter missing for {', '.join(broken)}: run install",
+            )
+        )
     sandbox = _table(project, "sandbox")
     if sandbox.get("enabled") is True and sandbox.get("allowUnsandboxedCommands") is False:
         checks.append(Check("ok", "shell commands run in the OS sandbox with no escape"))
@@ -101,6 +135,29 @@ def guard_checks(project: dict[str, Any]) -> list[Check]:
     else:
         checks.append(Check("warn", "the agent can be switched to bypass-permissions mode"))
     return checks
+
+
+def notice_checks(project_dir: Path, project: dict[str, Any]) -> list[Check]:
+    hooks = _table(project, "hooks")
+    if not any(_veil_hook_commands(hooks.get(e)) for e in _HOOK_EVENTS):
+        return []
+    missing_docs: list[str] = []
+    for name in _NOTICE_FILES:
+        doc = project_dir / name
+        try:
+            text = doc.read_text(encoding="utf-8") if doc.is_file() and not doc.is_symlink() else ""
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        if _NOTICE_BEGIN not in text:
+            missing_docs.append(name)
+    if missing_docs:
+        return [
+            Check(
+                "warn",
+                f"veil notice block missing in {', '.join(missing_docs)}: run install",
+            )
+        ]
+    return [Check("ok", f"veil notice blocks present ({', '.join(_NOTICE_FILES)})")]
 
 
 def privacy_checks(env: dict[str, str], cleanup_days: object) -> list[Check]:
@@ -169,7 +226,9 @@ def run_doctor(project_dir: Path) -> int:
         if "cleanupPeriodDays" in layer:
             cleanup = layer["cleanupPeriodDays"]
 
-    checks = guard_checks(project) + privacy_checks(env, cleanup)
+    checks = (
+        guard_checks(project) + notice_checks(project_dir, project) + privacy_checks(env, cleanup)
+    )
     checks += second_review_checks(project_dir)
     for check in checks:
         ui.out(f"{check.level:<4}  {check.message}")
