@@ -29,7 +29,8 @@ def read_input(path: Path | None, max_bytes: int) -> str:
     """The text to translate: a file, or stdin. UTF-8 only; refuses anything over max_bytes."""
     if path is not None:
         try:
-            data = path.read_bytes() if path.stat().st_size <= max_bytes else None
+            with path.open("rb") as handle:
+                data = handle.read(max_bytes + 1)
         except FileNotFoundError:
             raise VeilError("input file not found", exit_code=ExitCode.USAGE) from None
         except IsADirectoryError:
@@ -38,7 +39,7 @@ def read_input(path: Path | None, max_bytes: int) -> str:
             raise VeilError("cannot read the input file", exit_code=ExitCode.USAGE) from None
     else:
         data = sys.stdin.buffer.read(max_bytes + 1)
-    if data is None or len(data) > max_bytes:
+    if len(data) > max_bytes:
         raise VeilError(f"the input is larger than {max_bytes} bytes", exit_code=ExitCode.USAGE)
     try:
         return data.decode("utf-8")

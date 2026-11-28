@@ -81,8 +81,11 @@ class TestRecipient:
     def test_parse_normalises_case_and_whitespace(self):
         assert age.parse_recipient("  " + ID.recipient.upper() + "\n") == ID.recipient
 
-    @pytest.mark.parametrize("text", ["", "age1", "age1nope", ID.secret, "ssh-ed25519 AAAA", "x"])
+    # ID.secret is random per process: a sentinel keeps the test ids identical across
+    # pytest-xdist workers (otherwise every worker collects a different test list).
+    @pytest.mark.parametrize("text", ["", "age1", "age1nope", "<secret>", "ssh-ed25519 AAAA", "x"])
     def test_parse_rejects_garbage(self, text):
+        text = ID.secret if text == "<secret>" else text
         with pytest.raises(DecryptFailed) as info:
             age.parse_recipient(text)
         assert info.value.exit_code == ExitCode.DECRYPT_FAILED

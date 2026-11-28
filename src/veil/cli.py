@@ -46,6 +46,9 @@ class _Parser(argparse.ArgumentParser):
         message = re.sub(rf"invalid choice: {_REPR}", "invalid choice", message)
         message = re.sub(rf"invalid (\S+) value: {_REPR}", r"invalid \1 value", message)
         message = re.sub(
+            rf"ignored explicit argument {_REPR}", "ignored explicit argument", message
+        )
+        message = re.sub(
             r"ambiguous option: .*? could match",
             "ambiguous option, could match",
             message,
@@ -70,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         text_cmd = commands.add_parser(name, help=help_text)
         text_cmd.add_argument("--file", type=Path, help="read this file instead of stdin")
+        if name == "audit":
+            text_cmd.add_argument(
+                "--format",
+                choices=("text", "json"),
+                default="text",
+                help="output format (default: text)",
+            )
 
     clip = commands.add_parser("clip", help="sanitize or restore the clipboard (plain text only)")
     clip_commands = clip.add_subparsers(dest="clip_command", metavar="SUBCOMMAND")
@@ -348,7 +358,9 @@ def _text_command(args: argparse.Namespace) -> int:
         keystore, store = _stores()
         return load_engine(keystore, store, ask_passphrase=_ask_passphrase)
 
-    command = {"translate": textcmd.translate, "reverse": textcmd.reverse, "audit": textcmd.audit}
+    if args.command == "audit":
+        return textcmd.audit(load, args.file, fmt=args.format)
+    command = {"translate": textcmd.translate, "reverse": textcmd.reverse}
     return command[args.command](load, args.file)
 
 
