@@ -1,7 +1,9 @@
-"""The agent deny rules in .claude/settings.json keep the rules CLAUDE.md promises (P0.5, Q11, M2.2).
+"""The agent guard keeps the rules veil promises (P0.5, Q11, M2.2).
 
-`.claude/` is git-ignored (local-only agent config), so a CI checkout has no settings file: these
-tests skip there. Locally a missing file is a failure, so the rules can't silently disappear.
+Checks both the tracked template (`contrib/agent-guard/claude-settings.json`) and, when
+present, the local `.claude/settings.json`. That file is git-ignored, so a CI checkout has none
+and the local check skips there; anywhere else a missing file fails, so the rules can't silently
+disappear.
 """
 
 import json
@@ -10,14 +12,33 @@ from pathlib import Path
 
 import pytest
 
-SETTINGS = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+ROOT = Path(__file__).resolve().parents[2]
+TEMPLATE = ROOT / "contrib" / "agent-guard" / "claude-settings.json"
+LOCAL = ROOT / ".claude" / "settings.json"
 
 
-@pytest.fixture(scope="module")
-def deny() -> list[str]:
-    if not SETTINGS.exists() and os.environ.get("CI"):
-        pytest.skip(".claude/settings.json is local-only (git-ignored); not in a CI checkout")
-    return json.loads(SETTINGS.read_text(encoding="utf-8"))["permissions"]["deny"]
+def _load_settings(which: str) -> dict[str, object]:
+    if which == "template":
+        return json.loads(TEMPLATE.read_text(encoding="utf-8"))
+    if not LOCAL.exists():
+        if os.environ.get("CI"):
+            pytest.skip(".claude/settings.json is local-only (git-ignored); not in a CI checkout")
+        pytest.fail(".claude/settings.json is missing: run `veil agent-guard install`")
+    return json.loads(LOCAL.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module", params=["template", "local"])
+def settings_data(request: pytest.FixtureRequest) -> dict[str, object]:
+    return _load_settings(request.param)
+
+
+@pytest.fixture(scope="module", params=["template", "local"])
+def deny(request: pytest.FixtureRequest) -> list[str]:
+    permissions = _load_settings(request.param)["permissions"]
+    assert isinstance(permissions, dict)
+    rules = permissions["deny"]
+    assert isinstance(rules, list)
+    return rules
 
 
 @pytest.mark.parametrize(
@@ -41,11 +62,31 @@ def deny() -> list[str]:
         "Bash(*pkill*)", "Bash(*killall*)",
         # tools that type into the owner's windows
         "Bash(*paste_spike*)",
+        # macOS: the clipboard, the Keychain item, AppleScript and the LaunchAgent
+        "Bash(*pbpaste*)", "Bash(*pbcopy*)", "Bash(*osascript*)",
+        "Bash(*security find-generic-password*)", "Bash(*security dump-keychain*)",
+        "Bash(*launchctl*veil*)",
+        # the key and persona files themselves
+        "Read(~/Library/Keychains/**)", "Read(~/.config/veil/**)",
+        "Read(~/Library/Application Support/veil/**)", "Read(**/*.age)",
     ],
 )  # fmt: skip
-def test_rule_present(deny, rule):
+def test_rule_present(deny: list[str], rule: str):
     assert rule in deny
 
 
-def test_no_duplicates(deny):
+def test_no_duplicates(deny: list[str]):
     assert len(deny) == len(set(deny))
+
+
+def test_shell_commands_run_sandboxed_with_no_escape_hatch(settings_data: dict[str, object]):
+    sandbox = settings_data["sandbox"]
+    assert isinstance(sandbox, dict)
+    assert sandbox["enabled"] is True
+    assert sandbox["allowUnsandboxedCommands"] is False
+
+
+def test_bypass_mode_is_disabled(settings_data: dict[str, object]):
+    permissions = settings_data["permissions"]
+    assert isinstance(permissions, dict)
+    assert permissions["disableBypassPermissionsMode"] == "disable"

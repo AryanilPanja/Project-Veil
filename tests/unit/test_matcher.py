@@ -13,7 +13,7 @@ from hypothesis import strategies as st
 
 from veil.engine import reference
 from veil.engine.lexicon import build_lexicon
-from veil.engine.matcher import Engine, Mapped, Matcher
+from veil.engine.matcher import Engine, Mapped, Matcher, _clusters
 from veil.persona.entities import flatten
 from veil.persona.schema import parse_persona
 from veil.persona.yamlio import load_yaml
@@ -280,33 +280,38 @@ def test_property_normalizing_the_output_gives_the_reference(lex, engine, parts)
     )
 
 
+def reference_mapping(raw: str):
+    """Per-cluster NFKC normalization oracle: maps every cluster on its own."""
+    clusters, cluster_of, pieces, norm_len = [], [], [], 0
+    for raw_start, raw_end in _clusters(raw):
+        piece = unicodedata.normalize("NFKC", raw[raw_start:raw_end])
+        clusters.append((raw_start, raw_end, norm_len, norm_len + len(piece)))
+        cluster_of.extend([len(clusters) - 1] * len(piece))
+        pieces.append(piece)
+        norm_len += len(piece)
+
+    def to_raw(start, end):
+        if start >= end:
+            return None
+        first, last = cluster_of[start], cluster_of[end - 1]
+        if clusters[first][2] != start or clusters[last][3] != end:
+            return None
+        return clusters[first][0], clusters[last][1]
+
+    return "".join(pieces), to_raw
+
+
 @settings(max_examples=300)
 @given(st.text(alphabet=[chr(i) for i in range(32, 127)] + ["\n", "\t"], max_size=60), st.data())
 def test_property_ascii_mapping_fast_path_equals_general(text, data):
-    """Mapped's ASCII fast path must map spans exactly like the general cluster mapping."""
+    """Mapped's ASCII fast path must map spans exactly like the per-cluster reference."""
     fast = Mapped(text)
-    general = Mapped.__new__(Mapped)
-    general.raw = text
-    general.identity = False
-    general.clusters, general.cluster_of = [], []
-    pieces = []
-    for raw_start, raw_end in __import__("veil.engine.matcher", fromlist=["_clusters"])._clusters(
-        text
-    ):
-        piece = unicodedata.normalize("NFKC", text[raw_start:raw_end])
-        general.clusters.append(
-            (raw_start, raw_end, len("".join(pieces)), len("".join(pieces)) + len(piece))
-        )
-        general.cluster_of.extend([len(general.clusters) - 1] * len(piece))
-        pieces.append(piece)
-    from veil.text.containment import PreparedText
-
-    general.prepared = PreparedText.from_normalized("".join(pieces))
-    assert fast.text == general.text
+    ref_text, ref_to_raw = reference_mapping(text)
+    assert fast.text == ref_text
     if text:
         start = data.draw(st.integers(0, len(text) - 1))
         end = data.draw(st.integers(start + 1, len(text)))
-        assert fast.to_raw(start, end) == general.to_raw(start, end)
+        assert fast.to_raw(start, end) == ref_to_raw(start, end)
 
 
 # ── counted translation (M2.2: per-category counts for notifications) ─────────

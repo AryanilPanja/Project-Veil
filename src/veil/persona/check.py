@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from veil import ui
 from veil.errors import PersonaFormatError, VeilError
 from veil.exitcodes import ExitCode
+from veil.persona import canary
 from veil.persona.report import Finding, Report, Severity, make_report, render_json, render_text
 from veil.persona.schema import PersonaSchemaError, parse_persona
 from veil.persona.validate import validate
@@ -57,14 +58,26 @@ def check_bytes(data: bytes) -> Report:
         return make_report(
             [Finding(Severity.ERROR, i.code, i.path, i.problem) for i in error.issues]
         )
-    return validate(persona)
+    report = validate(persona)
+    if not canary.can_insert(data.decode("utf-8")):
+        return make_report(
+            [
+                *report.findings,
+                Finding(
+                    Severity.ERROR,
+                    "E004",
+                    "version",
+                    "the persona needs a top-level `version:` line (block style)",
+                ),
+            ]
+        )
+    return report
 
 
 def read_source(path: Path) -> bytes:
     try:
-        if path.stat().st_size > MAX_BYTES:
-            raise VeilError("the persona file is too large", exit_code=ExitCode.USAGE)
-        return path.read_bytes()
+        with path.open("rb") as handle:
+            data = handle.read(MAX_BYTES + 1)
     except FileNotFoundError:
         raise VeilError("persona file not found", exit_code=ExitCode.USAGE) from None
     except IsADirectoryError:
@@ -75,3 +88,6 @@ def read_source(path: Path) -> bytes:
         ) from None
     except OSError:
         raise VeilError("cannot read the persona file", exit_code=ExitCode.USAGE) from None
+    if len(data) > MAX_BYTES:
+        raise VeilError("the persona file is too large", exit_code=ExitCode.USAGE)
+    return data
