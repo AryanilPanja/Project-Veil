@@ -23,6 +23,8 @@ from veil.exitcodes import ExitCode
 
 PASS = "correct horse battery"
 
+REAL_SECRET_SERVICE_BACKEND = keystore.secret_service_backend  # before conftest patches it
+
 
 @pytest.fixture(autouse=True)
 def _fast(fast_scrypt):
@@ -508,25 +510,21 @@ class TestStatusAndPinning:
         assert identity.recipient not in text
         assert str(config) not in text
 
-    def test_default_backend_is_secret_service_with_no_backend_selection(self, monkeypatch):
-        import importlib
+    def test_default_backend_is_secret_service_with_no_backend_selection(self):
         import inspect
 
         source = inspect.getsource(keystore)
         assert "import keyring" not in source
         assert "get_keyring" not in source
-        # The autouse fixture replaced the factory; check the real one, without calling D-Bus.
-        real = importlib.reload(importlib.import_module("veil.crypto.keystore"))
-        try:
-            if sys.platform == "darwin":
-                from veil.crypto.keychain import KeychainBackend
+        # The autouse fixture replaced the factory; check the real one (bound at import, before
+        # the fixture), without calling D-Bus. No reload: it would mint a second KeyBackend
+        # enum and break identity checks in later tests on the same worker.
+        if sys.platform == "darwin":
+            from veil.crypto.keychain import KeychainBackend
 
-                assert isinstance(real.secret_service_backend(), KeychainBackend)
-            else:
-                assert isinstance(real.secret_service_backend(), real.SecretStorageBackend)
-        finally:
-            importlib.reload(real)
-            monkeypatch.setattr(real, "secret_service_backend", keystore.secret_service_backend)
+            assert isinstance(REAL_SECRET_SERVICE_BACKEND(), KeychainBackend)
+        else:
+            assert isinstance(REAL_SECRET_SERVICE_BACKEND(), keystore.SecretStorageBackend)
 
     def test_tests_cannot_reach_the_real_keyring(self, config):
         with pytest.raises(KeyUnavailable, match="AssertionError"):
