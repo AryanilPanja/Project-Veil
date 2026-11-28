@@ -6,32 +6,11 @@ import unicodedata
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from tests.unit.test_matcher import FIXTURE, lexicon_from
+from tests.unit.test_matcher import FIXTURE, lexicon_from, reference_mapping
 from veil.engine import matcher
 from veil.engine.matcher import Engine, Mapped
 
 HANGUL_REAL, HANGUL_FAKE = "김민수", "박지훈"
-
-
-def reference_mapping(raw: str):
-    """The old per-cluster mapping: every cluster normalized on its own, one entry per char."""
-    clusters, cluster_of, pieces, norm_len = [], [], [], 0
-    for raw_start, raw_end in matcher._clusters(raw):
-        piece = unicodedata.normalize("NFKC", raw[raw_start:raw_end])
-        clusters.append((raw_start, raw_end, norm_len, norm_len + len(piece)))
-        cluster_of.extend([len(clusters) - 1] * len(piece))
-        pieces.append(piece)
-        norm_len += len(piece)
-
-    def to_raw(start, end):
-        if start >= end:
-            return None
-        first, last = cluster_of[start], cluster_of[end - 1]
-        if clusters[first][2] != start or clusters[last][3] != end:
-            return None
-        return clusters[first][0], clusters[last][1]
-
-    return "".join(pieces), to_raw
 
 
 ALPHABET = [

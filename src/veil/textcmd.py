@@ -14,6 +14,7 @@ Input limit MAX_INPUT_BYTES; input must be UTF-8. Every failure exits with an AD
 prints nothing on stdout, so a pipeline never receives untranslated text by mistake.
 """
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -62,12 +63,22 @@ def reverse(load: EngineLoader, path: Path | None) -> int:
     return int(ExitCode.OK)
 
 
-def audit(load: EngineLoader, path: Path | None) -> int:
+def audit(load: EngineLoader, path: Path | None, *, fmt: str = "text") -> int:
     text = ui.read_input(path, MAX_INPUT_BYTES)
     hits = load().audit(text)
     STAGES.mark("audit")
-    for hit in hits:
-        ui.out(f"{hit.line}:{hit.column}  {hit.path}  ({hit.kind})")
-    ui.out(f"{len(hits)} real form(s) found")
+    if fmt == "json":
+        payload = {
+            "count": len(hits),
+            "findings": [
+                {"line": hit.line, "column": hit.column, "path": hit.path, "kind": hit.kind}
+                for hit in hits
+            ],
+        }
+        ui.out(json.dumps(payload, indent=2))
+    else:
+        for hit in hits:
+            ui.out(f"{hit.line}:{hit.column}  {hit.path}  ({hit.kind})")
+        ui.out(f"{len(hits)} real form(s) found")
     STAGES.report()
     return int(ExitCode.FINDINGS if hits else ExitCode.OK)
