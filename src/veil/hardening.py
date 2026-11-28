@@ -1,8 +1,10 @@
 """Process hardening applied at the start of every `veil` command (ADR-0025).
 
 - umask 077: every file veil creates is private to the user.
-- No core dumps (RLIMIT_CORE=0) and not dumpable (PR_SET_DUMPABLE=0): plaintext in memory is not
-  written to systemd-coredump, and same-uid processes cannot ptrace or read /proc/<pid>/mem.
+- No core dumps (RLIMIT_CORE=0) and not dumpable: plaintext in memory is not written to a core
+  file, and same-uid processes cannot attach a debugger. Linux: PR_SET_DUMPABLE=0 (also closes
+  /proc/<pid>/mem). macOS: ptrace(PT_DENY_ATTACH); task_for_pid already needs root or the
+  debugger entitlement there, so this closes the remaining same-uid lldb/dtrace attach.
 - Redacting exception hooks: an unexpected crash prints the exception class only, never the
   message or traceback (both can contain persona values), and exits with code 70.
 """
@@ -24,6 +26,9 @@ from veil.exitcodes import ExitCode
 
 _PR_GET_DUMPABLE = 3
 _PR_SET_DUMPABLE = 4
+_PT_DENY_ATTACH = 31  # <sys/ptrace.h> on macOS
+
+_deny_attach_applied = False
 
 
 @dataclass(frozen=True)
@@ -54,7 +59,12 @@ def install_exception_hooks() -> None:
 
 
 def is_dumpable() -> bool | None:
-    """Current PR_GET_DUMPABLE state, or None when prctl is unavailable."""
+    """Whether a same-uid debugger could attach: PR_GET_DUMPABLE on Linux, our own
+    PT_DENY_ATTACH record on macOS (the kernel has no getter); None when unavailable."""
+    if sys.platform == "darwin":
+        if _deny_attach_applied:
+            return False
+        return None if _darwin_libc() is None else True
     libc = _libc()
     if libc is None:
         return None
@@ -75,12 +85,41 @@ def _disable_core_dumps() -> bool:
 
 
 def _set_non_dumpable() -> bool:
+    if sys.platform == "darwin":
+        return _deny_attach()
     libc = _libc()
     if libc is None:
         return False
     if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
         return False
     return is_dumpable() is False
+
+
+def _deny_attach() -> bool:
+    global _deny_attach_applied  # process-wide, set once
+    libc = _darwin_libc()
+    if libc is None:
+        return False
+    if libc.ptrace(_PT_DENY_ATTACH, 0, None, 0) != 0:
+        return False
+    _deny_attach_applied = True
+    return True
+
+
+@functools.cache
+def _darwin_libc() -> ctypes.CDLL | None:
+    """libSystem (already loaded) for ptrace, or None. Same CDLL(None) trick as _libc()."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+    except OSError:
+        return None
+    if not hasattr(libc, "ptrace"):
+        return None
+    libc.ptrace.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int)
+    libc.ptrace.restype = ctypes.c_int
+    return libc
 
 
 @functools.cache

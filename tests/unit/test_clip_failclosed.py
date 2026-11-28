@@ -308,6 +308,7 @@ class TestCliFailClosed:
 
     def test_no_clipboard_tool(self, monkeypatch, capsys, notifications, command):
         monkeypatch.setattr(clipio, "detect", REAL_DETECT)  # no display set: finds no tool
+        monkeypatch.setattr(clipio.sys, "platform", "linux")  # macOS always has a pasteboard
         got, _, err = run(capsys, command)
         assert got == ExitCode.CLIPBOARD
         assert "clipboard NOT cleared" in err

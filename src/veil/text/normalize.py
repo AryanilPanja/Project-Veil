@@ -33,9 +33,28 @@ def _dropped_at(text: str, i: int) -> bool:
     ch = text[i]
     if ch not in KEPT_FORMAT_CHARS:
         return is_dropped(ch)
-    before = text[i - 1] if i > 0 else " "
-    after = text[i + 1] if i + 1 < len(text) else " "
+    before = _visible_neighbor(text, i, -1)
+    after = _visible_neighbor(text, i, 1)
     return before.isascii() and after.isascii()
+
+
+_NEIGHBOR_SCAN_LIMIT = 32
+
+
+def _visible_neighbor(text: str, i: int, step: int) -> str:
+    """The nearest character in direction `step` that is neither a joiner nor dropped, so a
+    run of joiners or a joiner plus a variation selector ("Ja<ZWJ><ZWJ>ne") is judged by the
+    letters around it. A text edge counts as ASCII; so does a run longer than the scan limit
+    (bounded work per character; folding more is the safe direction)."""
+    j = i + step
+    for _ in range(_NEIGHBOR_SCAN_LIMIT):
+        if not 0 <= j < len(text):
+            return " "
+        c = text[j]
+        if c not in KEPT_FORMAT_CHARS and not is_dropped(c):
+            return c
+        j += step
+    return " "
 
 
 def nfkc(text: str) -> str:

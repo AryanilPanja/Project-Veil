@@ -12,6 +12,7 @@ Readers of /proc and /sys are injectable so tests never depend on the host.
 
 import os
 import stat
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,8 +49,16 @@ def _xdg(variable: str, fallback: str) -> Path:
 
 
 def runtime_base(read: TextReader = _read_text) -> Path:
-    """The validated base runtime directory (not yet the veil subdirectory)."""
+    """The validated base runtime directory (not yet the veil subdirectory).
+
+    macOS has no tmpfs: without an explicit XDG_RUNTIME_DIR, the base is veil's verified
+    RAM disk (ramdisk.py), made on first use.
+    """
     value = os.environ.get("XDG_RUNTIME_DIR", "").strip()
+    if sys.platform == "darwin" and not value:
+        from veil import ramdisk  # lazy: only macOS, only when plaintext needs a home
+
+        return ramdisk.ensure()
     base = Path(value) if value and Path(value).is_absolute() else Path(f"/run/user/{os.getuid()}")
     try:
         info = base.lstat()
@@ -147,6 +156,9 @@ def swap_status(read: TextReader = _read_text) -> SwapStatus:
     try:
         text = read("/proc/swaps")
     except OSError:
+        if sys.platform == "darwin":
+            # macOS always encrypts its swap files (since 10.7; `sysctl vm.swapusage` says so).
+            return SwapStatus(active=1, unprotected=0)
         return SwapStatus(active=0, unprotected=0)
     active = unprotected = 0
     for line in text.splitlines()[1:]:  # first line is the header

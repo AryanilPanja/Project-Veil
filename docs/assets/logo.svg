@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="veil">
+  <defs>
+    <clipPath id="tile"><rect width="256" height="256" rx="58"/></clipPath>
+  </defs>
+  <g clip-path="url(#tile)">
+    <rect width="256" height="256" fill="#2a2848"/>
+    <!-- long straight hair -->
+    <path d="M72 256 C 74 200, 76 150, 76 120 A52 52 0 0 1 180 120 C 180 150, 182 200, 184 256 Z"
+          fill="#0e0d16"/>
+    <!-- a mask in place of the face: arched brows, slit eyes, curled moustache, thin beard -->
+    <path d="M102 112 H154 V140 C 154 168, 142 186, 128 190 C 114 186, 102 168, 102 140 Z"
+          fill="#e6dfe6"/>
+    <g fill="none" stroke="#1a1826" stroke-width="2.4" stroke-linecap="round">
+      <path d="M108 128 Q 115 121 122 127"/>
+      <path d="M148 128 Q 141 121 134 127"/>
+      <path d="M128 158 C 121 154, 113 160, 108 151 C 107 148, 110 147, 111 150"/>
+      <path d="M128 158 C 135 154, 143 160, 148 151 C 149 148, 146 147, 145 150"/>
+      <path d="M119 163 Q 128 169 137 163"/>
+    </g>
+    <g fill="#1a1826">
+      <path d="M109 134 Q 115 129 121 134 Q 115 136 109 134 Z"/>
+      <path d="M147 134 Q 141 129 135 134 Q 141 136 147 134 Z"/>
+      <path d="M125.5 169 L128 184 L130.5 169 Z"/>
+    </g>
+    <g fill="#d98b9b" fill-opacity="0.45">
+      <circle cx="112" cy="146" r="5"/>
+      <circle cx="144" cy="146" r="5"/>
+    </g>
+    <!-- sheer veil over the head and mask, hem below the chin -->
+    <path d="M30 208 C 44 170, 58 142, 60 116 A68 68 0 0 1 196 116 C 198 142, 212 170, 226 208
+             C 196 214, 172 226, 140 222 C 108 218, 70 230, 30 208 Z"
+          fill="#dcdaf0" fill-opacity="0.3"/>
+    <g fill="none" stroke="#f1f0f8" stroke-linecap="round" stroke-width="2.5" stroke-opacity="0.16">
+      <path d="M98 64 C 86 120, 80 170, 76 222"/>
+      <path d="M158 64 C 170 120, 178 168, 186 220"/>
+    </g>
+    <path d="M30 208 C 44 170, 58 142, 60 116 A68 68 0 0 1 196 116 C 198 142, 212 170, 226 208"
+          fill="none" stroke="#f1f0f8" stroke-opacity="0.45" stroke-width="2.5"/>
+    <!-- the rolled hem -->
+    <path d="M226 208 C 196 214, 172 226, 140 222 C 108 218, 70 230, 30 208"
+          fill="none" stroke="#f1f0f8" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+</svg>
