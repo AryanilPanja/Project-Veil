@@ -16,6 +16,8 @@ raw cluster. A hit must cover whole clusters; a hit that would replace part of o
 of "ﬁ") is rejected, so veil never edits half of a character.
 """
 
+import bisect
+import re
 import unicodedata
 from dataclasses import dataclass
 from functools import cached_property
@@ -39,14 +41,21 @@ class RawMatch:
 
 
 class Mapped:
-    """The raw text, its cluster-wise NFKC form, and the map between them."""
+    """The raw text, its cluster-wise NFKC form, and the map between them.
 
-    __slots__ = ("cluster_of", "clusters", "identity", "prepared", "raw")
+    Stored as segments `(raw start, raw end, norm start, norm end, run)`. A run segment is a
+    stretch of characters that are each their own cluster and already NFKC (`_STABLE`), so any
+    offset inside it maps one to one. Every other segment is a single cluster: a base character
+    with its marks, or a conjoining-jamo syllable. One ligature in a large text used to cost one
+    tuple per character; it now costs a few segments (sweep 2026-11: 5x memory on 1 MB).
+    """
+
+    __slots__ = ("identity", "prepared", "raw", "segments", "starts")
 
     def __init__(self, raw: str) -> None:
         self.raw = raw
-        self.clusters: list[tuple[int, int, int, int]] = []  # raw start, raw end, norm start, end
-        self.cluster_of: list[int] = []
+        self.segments: list[tuple[int, int, int, int, bool]] = []
+        self.starts: list[int] = []  # norm start of each segment, for bisect
         self.identity = raw.isascii() or unicodedata.is_normalized("NFKC", raw)
         if self.identity:
             # Fast path: the text is already NFKC (always true for ASCII), so normalized and raw
@@ -56,10 +65,13 @@ class Mapped:
             return
         pieces: list[str] = []
         norm_len = 0
-        for raw_start, raw_end in _clusters(raw):
-            piece = unicodedata.normalize("NFKC", raw[raw_start:raw_end])
-            self.clusters.append((raw_start, raw_end, norm_len, norm_len + len(piece)))
-            self.cluster_of.extend([len(self.clusters) - 1] * len(piece))
+        for raw_start, raw_end, run in _segments(raw):
+            chunk = raw[raw_start:raw_end]
+            piece = chunk if run else unicodedata.normalize("NFKC", chunk)
+            if not piece:
+                continue
+            self.segments.append((raw_start, raw_end, norm_len, norm_len + len(piece), run))
+            self.starts.append(norm_len)
             pieces.append(piece)
             norm_len += len(piece)
         self.prepared = PreparedText.from_normalized("".join(pieces))
@@ -74,13 +86,24 @@ class Mapped:
             return None
         if self.identity:
             raw = self.raw
-            if _is_mark(raw[start]) or (end < len(raw) and _is_mark(raw[end])):
+            if _continues(raw[start]) or (end < len(raw) and _continues(raw[end])):
                 return None  # would split a base character from its marks
             return start, end
-        first, last = self.cluster_of[start], self.cluster_of[end - 1]
-        if self.clusters[first][2] != start or self.clusters[last][3] != end:
+        raw_start, _, norm_start, _, run = self.segments[
+            bisect.bisect_right(self.starts, start) - 1
+        ]
+        if run:
+            raw_start += start - norm_start
+        elif start != norm_start:
             return None
-        return self.clusters[first][0], self.clusters[last][1]
+        last_start, raw_end, last_norm, norm_end, run = self.segments[
+            bisect.bisect_right(self.starts, end - 1) - 1
+        ]
+        if run:
+            raw_end = last_start + (end - last_norm)
+        elif end != norm_end:
+            return None
+        return raw_start, raw_end
 
 
 class Matcher:
@@ -171,6 +194,12 @@ class AuditHit:
     kind: str  # entity kind (name, email, phone…)
 
 
+def _hit(text: str, start: int, path: str, kind: str) -> AuditHit:
+    line = text.count("\n", 0, start) + 1
+    column = start - (text.rfind("\n", 0, start) + 1) + 1
+    return AuditHit(line, column, path, kind)
+
+
 class Engine:
     """forward (real → fake) and reverse (fake → real) over one lexicon."""
 
@@ -223,13 +252,17 @@ class Engine:
 
         Positions and field paths only; the matched text is never part of the result.
         """
-        hits: list[AuditHit] = []
+        hits: list[tuple[int, AuditHit]] = []
         for match in self.forward_matcher.find(text, use_context=False):
-            line = text.count("\n", 0, match.start) + 1
-            column = match.start - (text.rfind("\n", 0, match.start) + 1) + 1
             entity = match.form.entity
-            hits.append(AuditHit(line, column, entity.sources[0], entity.kind.value))
-        return hits
+            hits.append(
+                (match.start, _hit(text, match.start, entity.sources[0], entity.kind.value))
+            )
+        for match in self.sensitive(text):  # listed special-category terms count as findings too
+            entity = match.form.entity
+            kind = f"sensitive {entity.meta_value('category', 'term')}"
+            hits.append((match.start, _hit(text, match.start, entity.sources[0], kind)))
+        return [hit for _, hit in sorted(hits, key=lambda pair: pair[0])]
 
     @cached_property
     def _residue(self) -> Residue:
@@ -268,15 +301,49 @@ def _is_mark(ch: str) -> bool:
     return unicodedata.combining(ch) != 0 or unicodedata.category(ch).startswith("M")
 
 
+# Conjoining jamo that attach to the syllable before them: medial vowels and final consonants
+# (U+1160-11FF, U+D7B0-D7FF). macOS hands out NFD Hangul, so 김 arrives as three jamo.
+_JAMO_CONTINUES = re.compile(r"[\u1160-\u11ff\ud7b0-\ud7ff]")
+
+# Characters that are NFKC by themselves and never compose with a preceding character: ASCII,
+# Latin-1 letters, kana, CJK unified ideographs, precomposed Hangul (checked exhaustively in
+# tests). A run of them maps one to one; its last one joins the next cluster if a mark follows.
+_STABLE_RUN = re.compile(
+    r"[\x00-\x7f\u00c0-\u00ff\u3041-\u3096\u30a1-\u30fa\u4e00-\u9fff\uac00-\ud7a3]+"
+)
+
+
+def _continues(ch: str) -> bool:
+    """Whether `ch` belongs to the cluster of the character before it."""
+    return _is_mark(ch) or _JAMO_CONTINUES.match(ch) is not None
+
+
 def _clusters(raw: str) -> list[tuple[int, int]]:
-    """(start, end) of each base character plus the marks that follow it."""
+    """(start, end) of each base character plus the marks (or conjoining jamo) that follow it."""
     spans: list[tuple[int, int]] = []
     start = 0
     for i in range(1, len(raw) + 1):
-        if i == len(raw) or not _is_mark(raw[i]):
+        if i == len(raw) or not _continues(raw[i]):
             spans.append((start, i))
             start = i
     return spans if raw else []
+
+
+def _segments(raw: str):
+    """Yield (start, end, run): runs of `_STABLE_RUN` characters, and single clusters between."""
+    pos = 0
+    for match in _STABLE_RUN.finditer(raw):
+        run_start, run_end = match.span()
+        if run_end < len(raw) and _continues(raw[run_end]):
+            run_end -= 1  # the last character takes the marks after it: a cluster of its own
+        if run_start < pos or run_end <= run_start:
+            continue
+        for start, end in _clusters(raw[pos:run_start]):
+            yield pos + start, pos + end, False
+        yield run_start, run_end, True
+        pos = run_end
+    for start, end in _clusters(raw[pos:]):
+        yield pos + start, pos + end, False
 
 
 def _greedy(hits) -> list[tuple[int, int]]:

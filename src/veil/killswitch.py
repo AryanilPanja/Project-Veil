@@ -297,6 +297,81 @@ class NoWatcher:
         return False
 
 
+LAUNCHD_LABEL = "io.github.veil.watch"
+LAUNCHCTL = "/bin/launchctl"
+
+
+class LaunchdWatcher:
+    """macOS: a launchd user agent running `python -m veil clip watch` (the resident poller in
+    clip/macwatch.py). Loaded while ON; launchd restarts it if it crashes, and a clean exit
+    (veil OFF) stays stopped. The plist is removed on stop, so nothing starts at the next
+    login while veil is OFF."""
+
+    def __init__(
+        self,
+        agent_dir: Path,
+        *,
+        python: str = sys.executable,
+        env: dict[str, str] | None = None,
+        uid: int | None = None,
+        run: Run | None = None,
+    ) -> None:
+        self._agent_dir, self._python = agent_dir, python
+        self._env = dict(os.environ) if env is None else env
+        self._domain = f"gui/{os.getuid() if uid is None else uid}"
+        self._run = run or _run
+
+    @property
+    def plist_path(self) -> Path:
+        return self._agent_dir / f"{LAUNCHD_LABEL}.plist"
+
+    def plist_bytes(self) -> bytes:
+        import plistlib
+
+        env = {
+            name: self._env[name]
+            for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME")
+            if self._env.get(name) and _printable(self._env[name])
+        }
+        agent: dict[str, object] = {
+            "Label": LAUNCHD_LABEL,
+            "ProgramArguments": [self._python, "-m", "veil", "clip", "watch"],
+            "RunAtLoad": True,
+            "KeepAlive": {"SuccessfulExit": False},  # restart after a crash, not after OFF
+            "ThrottleInterval": 2,
+            "ProcessType": "Interactive",  # no timer throttling: a copy is handled in 0.25 s
+            "StandardOutPath": "/dev/null",
+            "StandardErrorPath": "/dev/null",
+        }
+        if env:
+            agent["EnvironmentVariables"] = env
+        return plistlib.dumps(agent)
+
+    def start(self) -> bool:
+        self._agent_dir.mkdir(parents=True, exist_ok=True)
+        fsutil.atomic_write(self.plist_path, self.plist_bytes(), what="the watcher agent")
+        self.plist_path.chmod(0o644)
+        self._launchctl("bootout", f"{self._domain}/{LAUNCHD_LABEL}")  # a stale copy, if any
+        return self._launchctl("bootstrap", self._domain, str(self.plist_path)) == 0 and (
+            self.active()
+        )
+
+    def stop(self) -> None:
+        # Plist first: when the watcher itself switches OFF, bootout ends this very process.
+        self.plist_path.unlink(missing_ok=True)
+        self._launchctl("bootout", f"{self._domain}/{LAUNCHD_LABEL}")
+
+    def active(self) -> bool:
+        return self._launchctl("print", f"{self._domain}/{LAUNCHD_LABEL}") == 0
+
+    def _launchctl(self, *args: str) -> int:
+        return self._run([LAUNCHCTL, *args])
+
+
+def launch_agent_dir() -> Path:
+    return Path.home() / "Library" / "LaunchAgents"
+
+
 def unit_dir() -> Path:
     from veil import paths
 
@@ -304,6 +379,8 @@ def unit_dir() -> Path:
 
 
 def detect_watcher(which: Callable[[str], str | None] = shutil.which) -> Watcher:
+    if sys.platform == "darwin":
+        return LaunchdWatcher(launch_agent_dir())
     systemctl = which("systemctl")
     return SystemdWatcher(systemctl, unit_dir()) if systemctl else NoWatcher()
 
@@ -412,7 +489,24 @@ class NoTimers:
         return None
 
 
+class WatcherClock:
+    """macOS: the resident watcher checks the end time itself every 30 s (clip/macwatch.py),
+    so there is nothing to schedule. There is no "stopped" check either: launchd restarts a
+    crashed watcher."""
+
+    def schedule(self, switch: Switch, now: datetime) -> bool:
+        return True
+
+    def schedule_check(self, delay: timedelta) -> bool:
+        return False
+
+    def cancel(self) -> None:
+        return None
+
+
 def detect_timers(which: Callable[[str], str | None] = shutil.which) -> Timers:
+    if sys.platform == "darwin":
+        return WatcherClock()
     systemd_run, systemctl = which("systemd-run"), which("systemctl")
     if systemd_run and systemctl:
         return SystemdTimers(systemd_run, systemctl)
@@ -443,8 +537,13 @@ def switch_on(
     stays OFF: never "ON" without protection). Returns (switch, end timer scheduled)."""
     if not watcher.start():
         watcher.stop()
+        service = (
+            f"launchd agent {LAUNCHD_LABEL}"
+            if sys.platform == "darwin"
+            else "systemd user service veil-watch"
+        )
         raise VeilError(
-            "the copy watcher didn't start (systemd user service veil-watch); veil stays OFF",
+            f"the copy watcher didn't start ({service}); veil stays OFF",
             exit_code=ExitCode.UNSAFE_ENVIRONMENT,
         )
     switch = Switch(True, now, None if duration is None else now + duration)
@@ -493,9 +592,10 @@ def on_message(switch: Switch, now: datetime) -> Message:
         until = f"Until {_local(switch.until)} ({describe_duration(switch.until - now)}). "
     else:
         until = "Until you switch it off. "
+    paste_key = "Cmd+V" if sys.platform == "darwin" else "Ctrl+V"
     return Message(
         "veil ON",
-        f"Every copy is sanitized: Ctrl+V pastes the sanitized text.\n{until}{toggle_hint()}",
+        f"Every copy is sanitized: {paste_key} pastes the sanitized text.\n{until}{toggle_hint()}",
         icon="security-high",
     )
 
@@ -512,10 +612,15 @@ def off_message(*, expired: bool = False) -> Message:
 
 
 def down_message() -> Message:
+    why = (
+        f"(`launchctl print gui/{os.getuid()}/{LAUNCHD_LABEL}` shows why.)"
+        if sys.platform == "darwin"
+        else "(`journalctl --user -u veil-watch` shows why.)"
+    )
     return Message(
         "veil isn't running",
         "veil should be ON, but the copy watcher stopped: copies are NOT sanitized.\n"
-        f"{toggle_hint()} (`journalctl --user -u veil-watch` shows why.)",
+        f"{toggle_hint()} {why}",
         Urgency.CRITICAL,
         icon="dialog-warning",
     )
@@ -578,6 +683,10 @@ def confirm_by_notification(choose: Chooser | None) -> bool:
 
 
 def detect_chooser(which: Callable[[str], str | None] = shutil.which) -> Chooser | None:
+    if sys.platform == "darwin":
+        from veil.clip import macnotify
+
+        return macnotify.choose
     path = which("notify-send")
     if path is None:
         return None

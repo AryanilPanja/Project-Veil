@@ -256,6 +256,7 @@ class TestRuntimeDir:
 
     @pytest.mark.parametrize("value", ["", "  ", "relative/run"])
     def test_unset_or_relative_variable_falls_back_to_run_user(self, monkeypatch, value):
+        monkeypatch.setattr(paths.sys, "platform", "linux")  # darwin uses the RAM disk
         monkeypatch.setenv("XDG_RUNTIME_DIR", value)
         seen: list[Path] = []
 
@@ -294,12 +295,17 @@ def swaps(*devices: str) -> str:
 
 
 class TestSwap:
+    def test_macos_swap_is_always_encrypted(self, monkeypatch):
+        monkeypatch.setattr(paths.sys, "platform", "darwin")
+        assert not paths.swap_status(reader({})).at_risk
+
     def test_no_swap(self):
         status = paths.swap_status(reader({"/proc/swaps": HEADER}))
         assert status == paths.SwapStatus(active=0, unprotected=0)
         assert not status.at_risk
 
-    def test_unreadable_proc_swaps_reports_nothing(self):
+    def test_unreadable_proc_swaps_reports_nothing(self, monkeypatch):
+        monkeypatch.setattr(paths.sys, "platform", "linux")
         assert paths.swap_status(reader({})) == paths.SwapStatus(0, 0)
 
     def test_empty_file(self):

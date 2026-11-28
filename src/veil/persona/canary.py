@@ -45,6 +45,11 @@ def remove(yaml_text: str) -> str:
     return _CANARY_COMMENT_LINE.sub("", text)
 
 
+def can_insert(yaml_text: str) -> bool:
+    """True when `insert` can place a canary after a top-level block `version:` line."""
+    return _VERSION_LINE.search(remove(yaml_text)) is not None
+
+
 def insert(yaml_text: str, canary: str) -> str:
     """Return `yaml_text` with `canary` added (any previous canary lines are replaced)."""
     if not is_canary(canary):

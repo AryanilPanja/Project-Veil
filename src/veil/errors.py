@@ -74,3 +74,7 @@ class ClipboardError(VeilError):
     """The clipboard can't be read or written: no tool or display, a tool failed or timed out."""
 
     exit_code = ExitCode.CLIPBOARD
+
+
+class ImageError(ClipboardError):
+    """An image on the clipboard is malformed or exceeds the size limit."""

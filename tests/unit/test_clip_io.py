@@ -9,6 +9,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from veil.clip import io as clipio
+from veil.clip.imagemeta import ImageFormat
 from veil.clip.io import (
     ClipContent,
     Kind,
@@ -19,7 +20,7 @@ from veil.clip.io import (
     detect,
 )
 from veil.clip.proc import Captured
-from veil.errors import ClipboardError
+from veil.errors import ClipboardError, ImageError
 from veil.exitcodes import ExitCode
 
 SYNTHETIC = "Hi, I'm Jane Doe (jane.doe@xyz.example.test)\n"
@@ -52,7 +53,10 @@ class FakeWayland:
         if "--list-types" in argv:
             return Captured(0, "".join(f"{t}\n" for t in offers).encode(), b"")
         wanted = argv[argv.index("--type") + 1]
-        assert "--no-newline" in argv
+        if wanted.startswith("image/"):
+            assert "--no-newline" not in argv
+        else:
+            assert "--no-newline" in argv
         if wanted not in offers:
             return Captured(1, b"", b"Clipboard content is not available as requested type\n")
         data = offers[wanted]
@@ -106,10 +110,11 @@ class TestClassify:
             (["application/rtf"], Kind.RICH_ONLY, None),
             (["application/x-qt-richtext"], Kind.RICH_ONLY, None),
             (["text/uri-list", "x-special/gnome-copied-files"], Kind.RICH_ONLY, None),
-            (["image/png"], Kind.NON_TEXT, None),
-            (["image/png", "image/jpeg", "application/x-qt-image"], Kind.NON_TEXT, None),
+            (["image/png"], Kind.IMAGE, None),
+            (["image/png", "image/jpeg", "application/x-qt-image"], Kind.IMAGE, None),
+            (["image/webp"], Kind.IMAGE, None),
             (["application/octet-stream"], Kind.NON_TEXT, None),
-            (["image/png", "text/html"], Kind.RICH_ONLY, None),
+            (["image/png", "text/html"], Kind.IMAGE, None),
             ([], Kind.EMPTY, None),
             (["", "   "], Kind.EMPTY, None),
             (["TARGETS", "TIMESTAMP", "MULTIPLE"], Kind.EMPTY, None),
@@ -162,22 +167,54 @@ class TestWaylandRead:
         requested = [c[c.index("--type") + 1] for c in fake.calls if "--type" in c]
         assert requested == ["text/plain;charset=utf-8"]  # HTML is never requested
 
-    def test_html_only_is_not_read(self):
-        fake = FakeWayland({"text/html": b"<p>Jane Doe</p>"})
+    def test_html_only_is_converted_to_text(self):
+        fake = FakeWayland({"text/html": b"<p>Jane <b>Doe</b></p>"})
+        got = wayland(fake).read()
+        assert got == ClipContent(Kind.RICH_ONLY, "Jane Doe", type_count=1, plain_only=False)
+
+    def test_rtf_only_is_converted_to_text(self):
+        fake = FakeWayland({"application/rtf": rb"{\rtf1\ansi Jane\line Doe}"})
+        got = wayland(fake).read()
+        assert got == ClipContent(Kind.RICH_ONLY, "Jane\nDoe", type_count=1, plain_only=False)
+
+    def test_unconvertible_rich_only_is_not_read(self):
+        fake = FakeWayland({"x-special/gnome-copied-files": b"copy\nfile:///tmp/a"})
         got = wayland(fake).read()
         assert got == ClipContent(Kind.RICH_ONLY, type_count=1)
         assert len(fake.calls) == 1  # only --list-types
 
-    def test_image_only_is_not_read(self):
-        fake = FakeWayland({"image/png": b"\x89PNG\r\n\x1a\n...."})
+    def test_png_and_jpeg_images_are_read(self):
+        png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR"
+        fake = FakeWayland({"image/png": png, "image/jpeg": b"\xff\xd8\xff\xd9"})
         got = wayland(fake).read()
-        assert got.kind is Kind.NON_TEXT
-        assert got.text is None
+        assert got.kind is Kind.IMAGE
+        assert got.image == png
+        assert got.image_format is ImageFormat.PNG
+        assert got.image_converted is False
+
+    def test_non_png_jpeg_image_is_not_read_on_wayland(self):
+        fake = FakeWayland({"image/webp": b"RIFF....WEBP"})
+        got = wayland(fake).read()
+        assert got.kind is Kind.IMAGE
+        assert got.image is None
+        assert got.image_format is None
         assert len(fake.calls) == 1
 
     def test_image_with_plain_text_reads_the_text(self):
         got = wayland(FakeWayland({"image/png": b"\x89PNG", "text/plain": b"caption"})).read()
         assert (got.kind, got.text) == (Kind.TEXT, "caption")
+
+    def test_secret_hint_never_reads_image_or_rich(self):
+        for offers in (
+            {"image/png": b"\x89PNG", "x-kde-passwordManagerHint": b"secret"},
+            {"text/html": b"<p>s3cret</p>", "x-kde-passwordManagerHint": b"secret"},
+        ):
+            fake = FakeWayland(offers)
+            got = wayland(fake).read()
+            assert got.secret is True
+            assert got.image is None
+            assert got.text is None
+            assert len(fake.calls) == 1
 
     def test_nothing_copied_is_empty(self):
         assert wayland(FakeWayland(None)).read() == ClipContent(Kind.EMPTY)
@@ -351,6 +388,27 @@ class TestWaylandWrite:
         with pytest.raises(ClipboardError, match="--clear failed"):
             wayland(fake).clear()
 
+    @pytest.mark.parametrize(
+        ("fmt", "mime"), [(ImageFormat.PNG, "image/png"), (ImageFormat.JPEG, "image/jpeg")]
+    )
+    def test_write_image_offers_single_image_type(self, fmt, mime):
+        fake = FakeWayland({"image/png": b"old", "text/html": b"<b>old</b>"})
+        payload = b"\x89PNG\r\n\x1a\n" if fmt is ImageFormat.PNG else b"\xff\xd8\xff\xd9"
+        board = wayland(fake)
+        board.write_image(payload, fmt)
+        assert fake.sel[Selection.CLIPBOARD] == {mime: payload}
+        assert fake.calls[-1] == ["/usr/bin/wl-copy", "--type", mime]
+        assert fake.fed == [payload]
+        got = board.read()
+        assert got.kind is Kind.IMAGE
+        assert got.image == payload
+        assert got.image_format is fmt
+
+    def test_write_image_rejects_oversized_image(self):
+        fake = FakeWayland()
+        with pytest.raises(ImageError, match="larger than 100 bytes"):
+            wayland(fake, image_limit=100).write_image(b"\x89" * 101, ImageFormat.PNG)
+
 
 # ── xsel ──────────────────────────────────────────────────────────────────────
 
@@ -402,6 +460,10 @@ class TestXsel:
         assert fake.fed == [utf8(SYNTHETIC)]
         assert fake.sel["--primary"] == b"keep"
 
+    def test_write_image_is_rejected(self):
+        with pytest.raises(ClipboardError, match="plain text"):
+            xsel(FakeXsel()).write_image(b"\x89PNG", ImageFormat.PNG)
+
     def test_clear(self):
         fake = FakeXsel(b"x")
         xsel(fake).clear()
@@ -429,6 +491,11 @@ def which_from(*present: str):
 
 
 class TestDetect:
+    @pytest.fixture(autouse=True)
+    def _linux(self, monkeypatch):
+        # These cases cover the Linux tools; darwin always picks the pasteboard.
+        monkeypatch.setattr(clipio.sys, "platform", "linux")
+
     def test_wayland(self):
         board = detect(
             {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"},

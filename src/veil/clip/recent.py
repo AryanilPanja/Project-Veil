@@ -44,15 +44,12 @@ def location() -> Path:
 def remember(text: str, *, now: float | None = None) -> None:
     """Called just *before* veil writes `text`: the watcher can see the change before the write
     call returns. Best effort: never raises."""
-    with contextlib.suppress(Exception), _locked() as path:
-        try:
-            key, entries = _load(path)
-        except Exception:  # noqa: BLE001 - a damaged list is replaced, not kept failing
-            key, entries = secrets.token_hex(32), []
-        stamp = time.time() if now is None else now
-        entries = [e for e in entries if stamp - e[0] < MAX_AGE][-(KEEP - 1) :]
-        entries.append((stamp, _digest(key, text)))
-        _store(path, key, entries)
+    _remember_raw(text.encode("utf-8"), now=now)
+
+
+def remember_bytes(data: bytes, *, now: float | None = None) -> None:
+    """Remember raw image bytes just *before* veil writes them."""
+    _remember_raw(b"\x00img:" + data, now=now)
 
 
 def seen(text: str, *, now: float | None = None) -> bool:
@@ -62,17 +59,38 @@ def seen(text: str, *, now: float | None = None) -> bool:
     except Exception:  # noqa: BLE001 - unknown means "not ours": the watcher sanitizes
         return False
     stamp = time.time() if now is None else now
-    digest = _digest(key, text)
+    digest = _digest(key, text.encode("utf-8"))
     return any(d == digest and stamp - t < MAX_AGE for t, d in entries)
 
 
 def consume(text: str, *, now: float | None = None) -> bool:
     """Whether `text` is one of veil's recent writes, using that entry up."""
+    return _consume_raw(text.encode("utf-8"), now=now)
+
+
+def consume_bytes(data: bytes, *, now: float | None = None) -> bool:
+    """Whether `data` matches one of veil's recent image writes, using that entry up."""
+    return _consume_raw(b"\x00img:" + data, now=now)
+
+
+def _remember_raw(raw: bytes, *, now: float | None = None) -> None:
+    with contextlib.suppress(Exception), _locked() as path:
+        try:
+            key, entries = _load(path)
+        except Exception:  # noqa: BLE001 - a damaged list is replaced, not kept failing
+            key, entries = secrets.token_hex(32), []
+        stamp = time.time() if now is None else now
+        entries = [e for e in entries if stamp - e[0] < MAX_AGE][-(KEEP - 1) :]
+        entries.append((stamp, _digest(key, raw)))
+        _store(path, key, entries)
+
+
+def _consume_raw(raw: bytes, *, now: float | None = None) -> bool:
     try:
         with _locked() as path:
             key, entries = _load(path)
             stamp = time.time() if now is None else now
-            digest = _digest(key, text)
+            digest = _digest(key, raw)
             fresh = [(t, d) for t, d in entries if stamp - t < MAX_AGE]
             for i, (_, d) in enumerate(fresh):
                 if d == digest:
@@ -114,5 +132,5 @@ def _store(path: Path, key: str, entries: Entries) -> None:
     fsutil.atomic_write(path, json.dumps(data).encode("ascii"), what="the recent-writes list")
 
 
-def _digest(key: str, text: str) -> str:
-    return hashlib.blake2b(text.encode("utf-8"), key=bytes.fromhex(key), digest_size=16).hexdigest()
+def _digest(key: str, raw: bytes) -> str:
+    return hashlib.blake2b(raw, key=bytes.fromhex(key), digest_size=16).hexdigest()

@@ -63,8 +63,10 @@ def flatten(persona: Persona) -> FlatPersona:
             merged[key] = entity
         else:
             merged[key] = _merge(existing, entity)
+    entities = tuple(merged.values())
+    translated = {src: entity for entity in entities for src in entity.sources}
     return FlatPersona(
-        entities=tuple(merged.values()),
+        entities=entities,
         sensitive=_sensitive(persona),
         pattern_rules=_pattern_rules(persona),
         never_translate=frozenset(t for t in persona.never_translate if t.strip()),
@@ -76,11 +78,20 @@ def flatten(persona: Persona) -> FlatPersona:
             sensitive_default=persona.sensitive.default_policy,
         ),
         canary=persona.veil_canary,
-        academic=_academic(persona),
+        academic=_academic(persona, translated),
     )
 
 
-def _academic(persona: Persona) -> tuple[AcademicProfile, ...]:
+def _academic(
+    persona: Persona, translated: dict[str, Entity] | None = None
+) -> tuple[AcademicProfile, ...]:
+    if translated is None:
+        translated = {
+            src: entity
+            for record in iter_pair_records(persona)
+            if (entity := _to_entity(record)) is not None
+            for src in entity.sources
+        }
     profiles: list[AcademicProfile] = []
     for i, edu in enumerate(persona.education):
         degree, year = edu.degree, edu.year_of_study
@@ -88,10 +99,19 @@ def _academic(persona: Persona) -> tuple[AcademicProfile, ...]:
             year.enabled and year.real is not None
         ):
             continue
-        # Only forms that are themselves translated: the bare degree term ("MS") is not, so it
-        # could satisfy a guard forward but not in reverse (the round trip would break).
-        context_real = [edu.institution.real, *edu.aliases.real, *degree.phrases.real]
-        context_fake = [edu.institution.fake, *edu.aliases.fake, *degree.phrases.fake]
+        # Only forms that are themselves translated: the bare degree term ("MS"), KEEP
+        # institution/aliases, and disabled degree phrases are excluded so a guard cannot hold
+        # forward without holding in reverse.
+        inst = translated.get(f"education[{i}].institution")
+        phrases = translated.get(f"education[{i}].degree.phrases") if degree.enabled else None
+        context_real = [
+            *(inst.real_forms if inst is not None else ()),
+            *(phrases.real_forms if phrases is not None else ()),
+        ]
+        context_fake = [
+            *(inst.fake_forms if inst is not None else ()),
+            *(phrases.fake_forms if phrases is not None else ()),
+        ]
         profiles.append(
             AcademicProfile(
                 path=f"education[{i}]",

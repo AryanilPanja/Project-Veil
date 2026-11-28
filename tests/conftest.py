@@ -54,6 +54,7 @@ def _no_real_desktop(monkeypatch):
     """
     from veil import killswitch
     from veil.clip import io as clipio
+    from veil.clip import menubar
 
     monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
     monkeypatch.delenv("DISPLAY", raising=False)
@@ -69,8 +70,12 @@ def _no_real_desktop(monkeypatch):
     def forbidden_run(argv):
         raise AssertionError("a test tried to run systemctl/systemd-run")
 
+    def forbidden_menubar(*_a, **_k):
+        raise AssertionError("a test tried to start the real macOS menu-bar app")
+
     monkeypatch.setattr(clipio, "detect", guarded_detect)
     monkeypatch.setattr(killswitch, "_run", forbidden_run)
+    monkeypatch.setattr(menubar, "run", forbidden_menubar)
 
 
 @pytest.fixture(autouse=True)
@@ -89,6 +94,19 @@ def _no_real_keyring(monkeypatch):
         raise AssertionError("a test tried to use the real Secret Service keyring")
 
     monkeypatch.setattr(keystore, "secret_service_backend", forbidden)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_ramdisk(request, monkeypatch):
+    """No test may create or eject the owner's real macOS RAM disk (unless it opts in)."""
+    if request.node.get_closest_marker("real_ramdisk"):
+        return
+    from veil import ramdisk
+
+    def forbidden(*_a, **_k):
+        raise AssertionError("a test tried to use the real macOS RAM disk")
+
+    monkeypatch.setattr(ramdisk, "_run", forbidden)
 
 
 class RecordingNotifier:
@@ -270,7 +288,7 @@ class FakeShortcutService:
 
 @pytest.fixture(autouse=True)
 def shortcut_service(monkeypatch):
-    """No test may change the owner's real KDE shortcuts or run kbuildsycoca6."""
+    """No test may change the owner's real KDE/macOS shortcuts or run kbuildsycoca6."""
     from veil import shortcuts
 
     fake = FakeShortcutService()
@@ -280,8 +298,22 @@ def shortcut_service(monkeypatch):
         fake.rebuilds += 1
         return True
 
+    def fake_run_shortcuts(argv, *, timeout=30.0):
+        del timeout
+        if len(argv) >= 2 and argv[1] == "list":
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+        if len(argv) >= 2 and argv[1] == "sign" and "-o" in argv and "-i" in argv:
+            from pathlib import Path
+
+            src = Path(argv[argv.index("-i") + 1])
+            dst = Path(argv[argv.index("-o") + 1])
+            dst.write_bytes(b"AEA1-FAKE-SIGNED:" + src.read_bytes())
+            return subprocess.CompletedProcess(list(argv), 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(list(argv), 1, stdout="", stderr="")
+
     monkeypatch.setattr(shortcuts, "JeepneyShortcuts", lambda *a, **k: fake)
     monkeypatch.setattr(shortcuts, "kbuildsycoca", lambda *a, **k: rebuild)
+    monkeypatch.setattr(shortcuts, "_run_shortcuts", fake_run_shortcuts)
     return fake
 
 
@@ -331,12 +363,38 @@ class KeyboardRecorder:
 
 @pytest.fixture(autouse=True)
 def portal_keyboard(monkeypatch):
-    """No test may press keys through the real desktop portal (it types into the owner's
-    windows). Returns the recorder: `.pressed` lists every chord "pressed"."""
-    from veil.clip import paste, portal
+    """No test may press keys through the real desktop portal or macOS CGEventPost (it types
+    into the owner's windows). Returns the recorder: `.pressed` lists every chord "pressed"."""
+    from veil.clip import macpaste, paste, portal
 
     recorder = KeyboardRecorder()
     monkeypatch.setattr(portal, "RemoteKeyboard", recorder)
+    monkeypatch.setattr(macpaste, "held_modifiers", lambda: 0)
+
+    class MacRecorder:
+        def __call__(self):
+            keyboard = FakeKeyboard()
+            keyboard.refuse, keyboard.fail = recorder.refuse, recorder.fail
+            recorder.keyboards.append(keyboard)
+            return keyboard
+
+    def guarded_mac_open(self, restore_token=None):
+        del restore_token
+        if self.refuse:
+            raise macpaste.Refused("Accessibility permission is required to paste")
+        if self.fail:
+            raise macpaste.PasteError("macOS paste error")
+        return None
+
+    # FakeKeyboard.open raises portal.Refused/PortalError; adapt for macpaste when on darwin.
+    mac_factory = MacRecorder()
+
+    def make_mac_keyboard():
+        kb = mac_factory()
+        kb.open = lambda token=None: guarded_mac_open(kb, token)
+        return kb
+
+    monkeypatch.setattr(macpaste, "MacKeyboard", make_mac_keyboard)
     monkeypatch.setattr(paste, "RELEASE_WAIT", 0.0)
     return recorder
 

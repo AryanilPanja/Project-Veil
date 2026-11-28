@@ -180,7 +180,7 @@ class TestSanitize:
         "offer",
         [
             None,
-            {"image/png": b"x"},
+            {"text/uri-list": b"file:///tmp/x"},
             {"text/plain": b"x", "x-kde-passwordManagerHint": b"secret"},
         ],
     )

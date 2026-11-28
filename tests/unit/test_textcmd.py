@@ -143,6 +143,29 @@ class TestAudit:
         _, out, _ = run(monkeypatch, capsys, "audit", "অ্যা Jane")
         assert out.startswith("1:6  ")
 
+    def test_json_format_reports_findings_without_values(self, imported, monkeypatch, capsys):
+        import json
+
+        code, out, _ = run(monkeypatch, capsys, "audit", REAL_TEXT, "--format", "json")
+        assert code == ExitCode.FINDINGS
+        data = json.loads(out)
+        assert data["count"] == len(data["findings"])
+        assert data["count"] > 0
+        first = data["findings"][0]
+        assert set(first) == {"line", "column", "path", "kind"}
+        assert first["path"] == "person.full_name"
+        for real in REALS:
+            assert real not in out
+
+    def test_json_format_clean_text(self, imported, monkeypatch, capsys):
+        import json
+
+        code, out, _ = run(
+            monkeypatch, capsys, "audit", "Alex Smith at ABCU, nothing real", "--format", "json"
+        )
+        assert code == ExitCode.OK
+        assert json.loads(out) == {"count": 0, "findings": []}
+
 
 # ── failures: nothing on stdout ───────────────────────────────────────────────
 

@@ -9,16 +9,18 @@ from hypothesis import assume, given
 from hypothesis import strategies as st
 
 from tests.helpers.fakeclip import FakeBoard
+from tests.unit.test_imagemeta import build_exif, build_jpeg, build_png, jpeg_seg, parse_png_chunks
 from tests.unit.test_matcher import FIXTURE, lexicon_from
 from tests.unit.test_textcmd import imported  # noqa: F401 - pytest fixture
 from veil import cli
 from veil.clip import commands, messages
 from veil.clip import io as clipio
 from veil.clip.commands import Action, Outcome, Skip
-from veil.clip.io import Selection
+from veil.clip.imagemeta import ImageFormat
+from veil.clip.io import ClipContent, Kind, Selection
 from veil.clip.io import detect as REAL_DETECT  # bound before conftest guards it
 from veil.engine.matcher import Engine
-from veil.errors import ClipboardError, KeyUnavailable
+from veil.errors import ClipboardError, ImageError, KeyUnavailable
 from veil.exitcodes import ExitCode
 
 REAL = "Hi, I'm Jane Doe (jane.doe@xyz.example.test), MS thesis at XYZIT.\nFiles: /home/janed/jane-thesis/main.tex\n"
@@ -88,6 +90,83 @@ class TestSanitize:
         assert outcome.changed
         assert outcome.total == 0
 
+    def test_html_only_is_converted_and_sanitized_to_plain_text(self, engine):
+        html_real = REAL.strip("\n").replace("\n", "<br>")
+        board = FakeBoard({"text/html": f"<p>{html_real}</p>".encode()})
+        outcome = commands.sanitize(board, Loader(engine))
+        assert outcome.changed
+        assert outcome.total == 6
+        assert board.types() == ["text/plain"]
+        assert board.text() == FAKE.strip("\n")
+        assert_no_reals(board.text())
+
+    def test_rtf_only_is_converted_and_sanitized_to_plain_text(self, engine):
+        board = FakeBoard(
+            {"text/rtf": rb"{\rtf1\ansi Hi Jane Doe\line email: jane.doe@xyz.example.test}"}
+        )
+        outcome = commands.sanitize(board, Loader(engine))
+        assert outcome.changed
+        assert outcome.replaced == {"name": 1, "email": 1}
+        assert board.types() == ["text/plain"]
+        assert board.text() == "Hi Alex Smith\nemail: alex.smith@abc.example.test"
+        assert_no_reals(board.text())
+
+    def test_png_metadata_is_stripped_without_loading_persona(self):
+        png, idat = build_png(
+            (b"tEXt", b"Author\x00Jane Doe"), (b"tIME", b"\x07\xea\x0b\x1b\x00\x00\x00")
+        )
+        board = FakeBoard({"image/png": png, "text/html": b"<b>Jane Doe</b>"})
+        load = Loader(error=AssertionError("must not load"))
+        outcome = commands.sanitize(board, load)
+        assert outcome == Outcome(Action.SANITIZE, image_removed=2)
+        assert outcome.changed
+        assert load.calls == 0
+        assert len(board.image_writes) == 1
+        assert board.types() == ["image/png"]
+        assert idat in board.image()
+        assert b"Jane Doe" not in board.image()
+        assert [c[0] for c in parse_png_chunks(board.image())] == [b"IHDR", b"IDAT", b"IEND"]
+
+    def test_jpeg_metadata_is_stripped_and_orientation_preserved(self):
+        exif = jpeg_seg(0xE1, build_exif(orientation=6, gps=True))
+        com = jpeg_seg(0xFE, b"Jane Doe")
+        jpg, entropy = build_jpeg(exif, com)
+        board = FakeBoard({"image/jpeg": jpg})
+        load = Loader(error=AssertionError("must not load"))
+        outcome = commands.sanitize(board, load)
+        assert outcome == Outcome(Action.SANITIZE, image_removed=2)
+        assert load.calls == 0
+        assert board.types() == ["image/jpeg"]
+        assert entropy in board.image()
+        assert b"Jane Doe" not in board.image()
+        assert b"GPS" not in board.image()
+
+    def test_converted_clean_png_is_written_back(self):
+        clean_png, _ = build_png()
+
+        class ConvertedBoard(FakeBoard):
+            def read(self, selection: Selection = Selection.CLIPBOARD) -> ClipContent:
+                return ClipContent(
+                    Kind.IMAGE,
+                    type_count=1,
+                    image=clean_png,
+                    image_format=ImageFormat.PNG,
+                    image_converted=True,
+                )
+
+        board = ConvertedBoard({"image/tiff": b"tiff"})
+        outcome = commands.sanitize(board, Loader(error=AssertionError("must not load")))
+        assert outcome == Outcome(Action.SANITIZE, image_removed=0)
+        assert outcome.changed
+        assert board.image_writes == [(clean_png, ImageFormat.PNG)]
+
+    def test_malformed_image_raises_without_writing(self):
+        board = FakeBoard({"image/png": b"not-a-valid-png"})
+        with pytest.raises(ImageError):
+            commands.sanitize(board, Loader(error=AssertionError("must not load")))
+        assert board.image_writes == []
+        assert board.writes == []
+
     @pytest.mark.parametrize("text", ["", "\n", "  \t", "no details here"])
     def test_texts_without_details_are_kept_exactly(self, engine, text):
         board = FakeBoard.with_text(text)
@@ -124,10 +203,12 @@ class TestSanitize:
         ("offer", "skip"),
         [
             (None, Skip.EMPTY),
-            ({"image/png": b"\x89PNG"}, Skip.NON_TEXT),
-            ({"text/html": HTML.encode()}, Skip.RICH_ONLY),
-            ({"text/rtf": b"{\\rtf1 Jane Doe}"}, Skip.RICH_ONLY),
+            ({"application/octet-stream": b"blob"}, Skip.NON_TEXT),
+            ({"image/webp": b"RIFF"}, Skip.NON_TEXT),
+            ({"image/png": build_png()[0]}, Skip.NO_METADATA),
+            ({"x-special/gnome-copied-files": b"copy\nfile:///tmp/a"}, Skip.RICH_ONLY),
             ({"text/plain": b"Jane", "x-kde-passwordManagerHint": b"secret"}, Skip.SECRET),
+            ({"image/png": build_png()[0], "x-kde-passwordManagerHint": b"secret"}, Skip.SECRET),
         ],
     )
     def test_left_unchanged_without_loading_the_persona(self, offer, skip):
@@ -139,6 +220,7 @@ class TestSanitize:
         assert not outcome.changed
         assert load.calls == 0
         assert board.writes == []
+        assert board.image_writes == []
         assert board.clears == []
         assert board.offers[Selection.CLIPBOARD] == before
 
@@ -199,8 +281,16 @@ class TestFromSelection:
         assert load.calls == 0
 
     def test_rich_only_selection(self):
-        board = FakeBoard(None, primary={"text/html": b"<b>x</b>"})
+        board = FakeBoard(None, primary={"x-special/gnome-copied-files": b"copy\nfile:///tmp/x"})
         assert commands.from_selection(board, Loader()).skipped is Skip.RICH_ONLY
+
+    def test_html_only_selection_is_sanitized(self, engine):
+        html_real = REAL.strip("\n").replace("\n", "<br>")
+        board = FakeBoard(None, primary={"text/html": f"<p>{html_real}</p>".encode()})
+        outcome = commands.from_selection(board, Loader(engine))
+        assert outcome.action is Action.FROM_SELECTION
+        assert outcome.total == 6
+        assert board.text() == FAKE.strip("\n")
 
 
 # ── restore ───────────────────────────────────────────────────────────────────
@@ -243,7 +333,8 @@ class TestRestore:
         ("offer", "skip"),
         [
             (None, Skip.EMPTY),
-            ({"image/png": b"x"}, Skip.NON_TEXT),
+            ({"image/png": build_png((b"tEXt", b"Author\x00Alex"))[0]}, Skip.NON_TEXT),
+            ({"application/octet-stream": b"x"}, Skip.NON_TEXT),
             ({"text/html": b"<b>Alex</b>"}, Skip.RICH_ONLY),
             ({"text/plain": b"x", "x-kde-passwordManagerHint": b"secret"}, Skip.SECRET),
         ],
@@ -358,10 +449,34 @@ class TestCli:
 
     def test_skipped_does_not_need_a_store(self, board, capsys):
         # No store and no keyring: a skipped clipboard never touches either.
-        board.offers[Selection.CLIPBOARD] = {"image/png": b"x"}
+        board.offers[Selection.CLIPBOARD] = {"application/octet-stream": b"x"}
         code, _, err = run(capsys, "sanitize")
         assert code == ExitCode.OK
         assert "NOT sanitized: no plain text (an image or a file)" in err
+
+    def test_image_strip_does_not_need_a_store(self, board, capsys):
+        png, _ = build_png((b"tEXt", b"Author\x00Jane Doe"))
+        board.offers[Selection.CLIPBOARD] = {"image/png": png}
+        code, _, err = run(capsys, "sanitize")
+        assert code == ExitCode.OK
+        assert "removed 1 metadata block from the image" in err
+        assert b"Jane Doe" not in board.image()
+
+    def test_malformed_image_fails_closed(self, board, capsys):
+        board.offers[Selection.CLIPBOARD] = {"image/png": b"corrupt"}
+        code, _, err = run(capsys, "sanitize")
+        assert code == ExitCode.CLIPBOARD
+        assert board.writes == [commands.ERROR_PLACEHOLDER]
+        assert board.text() is None
+        assert "clipboard cleared (fail closed)" in err
+
+    def test_malformed_rtf_fails_closed(self, board, capsys):
+        board.offers[Selection.CLIPBOARD] = {"text/rtf": b"not-rtf"}
+        code, _, err = run(capsys, "sanitize")
+        assert code == ExitCode.CLIPBOARD
+        assert board.writes == [commands.ERROR_PLACEHOLDER]
+        assert board.text() is None
+        assert "clipboard cleared (fail closed)" in err
 
     def test_no_store_is_an_error_and_nothing_written(self, board, capsys):
         board.offers[Selection.CLIPBOARD] = {"text/plain": REAL.encode()}
@@ -390,6 +505,7 @@ class TestCli:
         # The real detection (conftest blocks it by default); no display is set, so it finds
         # no tool and touches nothing.
         monkeypatch.setattr(clipio, "detect", REAL_DETECT)
+        monkeypatch.setattr(clipio.sys, "platform", "linux")  # macOS always has a pasteboard
         code, _, err = run(capsys, "sanitize")
         assert code == ExitCode.CLIPBOARD
         assert "no clipboard tool found" in err

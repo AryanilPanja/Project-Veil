@@ -10,6 +10,7 @@ from veil import hardening
 from veil.exitcodes import ExitCode
 
 linux_only = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl is Linux-only")
+darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="PT_DENY_ATTACH is macOS-only")
 
 # A synthetic secret standing in for persona data that might end up in an exception message.
 SECRET = "Jane Doe 9876543210 jane.doe@example.test"
@@ -165,14 +166,40 @@ def test_without_hardening_python_would_leak():
 # ── failure paths, tested in-process on the private helpers ──
 
 
-def test_non_linux_platform_has_no_libc(monkeypatch):
-    monkeypatch.setattr(sys, "platform", "darwin")
+def test_unsupported_platform_has_no_libc(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "freebsd14")
+    hardening._libc.cache_clear()
+    hardening._darwin_libc.cache_clear()
     assert hardening._libc() is None
+    assert hardening._darwin_libc() is None
     assert hardening._set_non_dumpable() is False
     assert hardening.is_dumpable() is None
+    hardening._libc.cache_clear()
+    hardening._darwin_libc.cache_clear()
+
+
+@darwin_only
+def test_macos_denies_debugger_attach(applied):
+    assert applied["report"][2] is True
+    assert applied["complete"] is True
+    assert applied["dumpable"] is False
+
+
+def test_ptrace_failure_is_reported(monkeypatch):
+    class FailingLibc:
+        def ptrace(self, *_args):
+            return -1
+
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(hardening, "_darwin_libc", FailingLibc)
+    monkeypatch.setattr(hardening, "_deny_attach_applied", False)
+    assert hardening._set_non_dumpable() is False
+    assert hardening.is_dumpable() is True
 
 
 def test_libc_load_failure_is_tolerated(monkeypatch):
+    monkeypatch.setattr(hardening.sys, "platform", "linux")  # the prctl path
+
     def fail(*_a, **_k):
         raise OSError("no libc")
 
@@ -182,6 +209,8 @@ def test_libc_load_failure_is_tolerated(monkeypatch):
 
 
 def test_prctl_failure_is_reported(monkeypatch):
+    monkeypatch.setattr(hardening.sys, "platform", "linux")  # the prctl path
+
     class FailingLibc:
         def prctl(self, *_args):
             return -1

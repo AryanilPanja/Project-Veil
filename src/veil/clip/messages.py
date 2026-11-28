@@ -10,6 +10,8 @@ Urgency (spec §1.5: a reflexive Ctrl+V must never paste text you believed was s
 - an error → critical, saying whether the clipboard was cleared (M2.5).
 """
 
+import sys
+
 from veil.clip.ask import Decision, describe
 from veil.clip.commands import Action, Outcome, Pasted, Scrub, Skip
 from veil.clip.history import Forget
@@ -75,7 +77,7 @@ def stderr_lines(outcome: Outcome) -> list[str]:
     if history:
         lines.append(history)
     if outcome.pasted is not None:
-        lines.append(PASTE_LINES[outcome.pasted])
+        lines.append(_paste_line(outcome.pasted))
     leftover = residue.warning(outcome.residue)
     if leftover:
         lines.append(leftover)
@@ -92,13 +94,27 @@ def stderr_lines(outcome: Outcome) -> list[str]:
     return lines
 
 
-PASTE_LINES = {
-    Pasted.PASTED: "veil: pasted",
-    Pasted.REFUSED: "veil: not pasted (the desktop refused the permission); press Ctrl+V yourself",
-    Pasted.FAILED: "veil: not pasted (the desktop portal failed); press Ctrl+V yourself",
-}
+def _paste_key() -> str:
+    return "Cmd+V" if sys.platform == "darwin" else "Ctrl+V"
+
+
+def _paste_line(pasted: Pasted) -> str:
+    key = _paste_key()
+    if pasted is Pasted.PASTED:
+        return "veil: pasted"
+    if pasted is Pasted.REFUSED:
+        if sys.platform == "darwin":
+            return (
+                "veil: not pasted (Accessibility permission required in System Settings); "
+                f"press {key} yourself"
+            )
+        return f"veil: not pasted (the desktop refused the permission); press {key} yourself"
+    reason = "macOS paste failed" if sys.platform == "darwin" else "the desktop portal failed"
+    return f"veil: not pasted ({reason}); press {key} yourself"
+
+
 # Nothing to sanitize: the copy watcher stays quiet about these (ADR-0031).
-QUIET_SKIPS = frozenset({Skip.EMPTY, Skip.NON_TEXT, Skip.SECRET, Skip.OWN})
+QUIET_SKIPS = frozenset({Skip.EMPTY, Skip.NON_TEXT, Skip.NO_METADATA, Skip.SECRET, Skip.OWN})
 
 
 def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
@@ -111,6 +127,8 @@ def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
         return False
     if outcome.skipped is not None:
         return True  # rich text only, a Deny: the user must know
+    if outcome.image_removed is not None:
+        return bool(outcome.image_removed)
     # Fake forms already in the text are normal here (copying an AI answer): only worth a word
     # when something was also replaced (the stderr line always says it).
     return bool(outcome.total or outcome.asked or outcome.generalized or outcome.never_reverse) or (
@@ -119,6 +137,7 @@ def worth_notifying(outcome: Outcome, *, auto: bool) -> bool:
 
 
 def notification(outcome: Outcome) -> Message:
+    key = _paste_key()
     if outcome.skipped is Skip.DENIED:
         return Message(
             "veil: withheld, clipboard cleared",
@@ -126,6 +145,17 @@ def notification(outcome: Outcome) -> Message:
         )
     if outcome.skipped is not None:
         return _skipped(outcome.action, outcome.skipped)
+    if outcome.image_removed is not None:
+        suffix = {
+            None: "Ready to paste.",
+            Pasted.PASTED: "Pasted.",
+        }.get(outcome.pasted, f"Not pasted: press {key} yourself.")
+        if outcome.image_removed:
+            return Message(
+                "veil: image sanitized",
+                f"Removed {_blocks(outcome.image_removed)} from the image. {suffix}",
+            )
+        return Message("veil: image sanitized", f"Converted image to clean PNG. {suffix}")
     detail = categories(outcome.replaced)
     if outcome.action is Action.RESTORE:
         leftover = sum(outcome.residue.values())
@@ -148,7 +178,7 @@ def notification(outcome: Outcome) -> Message:
         {
             None: "Plain text only. Ready to paste.",
             Pasted.PASTED: "Plain text only. Pasted.",
-        }.get(outcome.pasted, "Plain text only. Not pasted: press Ctrl+V yourself.")
+        }.get(outcome.pasted, f"Plain text only. Not pasted: press {key} yourself.")
     )
     history = HISTORY_NOTES.get(outcome.history)
     if history:
@@ -211,6 +241,10 @@ def _sensitive_note(outcome: Outcome) -> str:
     return ""
 
 
+def _blocks(count: int) -> str:
+    return f"{count} metadata block" if count == 1 else f"{count} metadata blocks"
+
+
 def _line(outcome: Outcome) -> str:
     if outcome.skipped is Skip.DENIED:
         return (
@@ -220,6 +254,10 @@ def _line(outcome: Outcome) -> str:
     if outcome.skipped is not None:
         verb = "restored" if outcome.action is Action.RESTORE else "sanitized"
         return f"veil: clipboard NOT {verb}: {outcome.skipped.value}; left unchanged"
+    if outcome.image_removed is not None:
+        if outcome.image_removed:
+            return f"veil: sanitized: removed {_blocks(outcome.image_removed)} from the image"
+        return "veil: sanitized: converted image to clean PNG"
     detail = f" ({categories(outcome.replaced)})" if outcome.replaced else ""
     if outcome.action is Action.RESTORE:
         return f"veil: restored {outcome.total} detail(s){detail}"
@@ -241,6 +279,8 @@ def _skipped(action: Action, skip: Skip) -> Message:
         )
     if skip is Skip.EMPTY:
         return Message("veil: nothing to sanitize", "Nothing is copied.")
+    if skip is Skip.NO_METADATA:
+        return Message("veil: image unchanged", "Image has no metadata. Left unchanged.")
     return Message(
         "veil: clipboard NOT sanitized",
         f"{_sentence(skip.value)}. It still holds the original: don't paste it into a chat.",

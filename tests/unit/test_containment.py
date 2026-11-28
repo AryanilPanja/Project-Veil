@@ -129,6 +129,14 @@ def _oracle_side(edge: str, neighbour: str | None, left: bool) -> bool:
     return lo.islower() and up.isupper()
 
 
+def _oracle_left_base(text: str, i: int) -> str:
+    """The left neighbour; combining marks are looked through to their base (up to 32)."""
+    k = i - 1
+    while k > max(0, i - 33) and unicodedata.category(text[k])[0] == "M":
+        k -= 1
+    return text[k] if unicodedata.category(text[k])[0] != "M" else text[i - 1]
+
+
 def _oracle(needle: str, haystack: str) -> bool:
     target = canon(needle)
     if not target:
@@ -142,7 +150,7 @@ def _oracle(needle: str, haystack: str) -> bool:
                 continue
             if canon(sub) != target:
                 continue
-            left = text[i - 1] if i > 0 else None
+            left = _oracle_left_base(text, i) if i > 0 else None
             right = text[j] if j < len(text) else None
             if _oracle_side(sub[0], left, True) and _oracle_side(sub[-1], right, False):
                 return True
