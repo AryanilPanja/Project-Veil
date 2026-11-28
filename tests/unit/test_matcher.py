@@ -283,30 +283,16 @@ def test_property_normalizing_the_output_gives_the_reference(lex, engine, parts)
 @settings(max_examples=300)
 @given(st.text(alphabet=[chr(i) for i in range(32, 127)] + ["\n", "\t"], max_size=60), st.data())
 def test_property_ascii_mapping_fast_path_equals_general(text, data):
-    """Mapped's ASCII fast path must map spans exactly like the general cluster mapping."""
-    fast = Mapped(text)
-    general = Mapped.__new__(Mapped)
-    general.raw = text
-    general.identity = False
-    general.clusters, general.cluster_of = [], []
-    pieces = []
-    for raw_start, raw_end in __import__("veil.engine.matcher", fromlist=["_clusters"])._clusters(
-        text
-    ):
-        piece = unicodedata.normalize("NFKC", text[raw_start:raw_end])
-        general.clusters.append(
-            (raw_start, raw_end, len("".join(pieces)), len("".join(pieces)) + len(piece))
-        )
-        general.cluster_of.extend([len(general.clusters) - 1] * len(piece))
-        pieces.append(piece)
-    from veil.text.containment import PreparedText
+    """Mapped's ASCII fast path must map spans exactly like the per-cluster reference."""
+    from tests.unit.test_mapped_segments import reference_mapping
 
-    general.prepared = PreparedText.from_normalized("".join(pieces))
-    assert fast.text == general.text
+    fast = Mapped(text)
+    ref_text, ref_to_raw = reference_mapping(text)
+    assert fast.text == ref_text
     if text:
         start = data.draw(st.integers(0, len(text) - 1))
         end = data.draw(st.integers(start + 1, len(text)))
-        assert fast.to_raw(start, end) == general.to_raw(start, end)
+        assert fast.to_raw(start, end) == ref_to_raw(start, end)
 
 
 # ── counted translation (M2.2: per-category counts for notifications) ─────────
