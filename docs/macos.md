@@ -58,7 +58,8 @@ veil menubar                         # optional: menu-bar status item (veil ON /
     the ICC profile and Adobe colour data stay. A rotation flag is kept in a minimal EXIF block
     so the picture is not turned.
   - Bytes after the end of the image (a Motion Photo video, a second picture) are dropped.
-  - TIFF, HEIC and GIF are converted to PNG with ImageIO first.
+  - TIFF, HEIC and GIF are converted to PNG with ImageIO first, with EXIF orientation baked into
+    the pixels before metadata stripping.
   - An image with no metadata is left as it was. A malformed image clears the clipboard.
 - Text inside an image is not read: a screenshot of your name still shows your name.
 

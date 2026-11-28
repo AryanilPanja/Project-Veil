@@ -143,12 +143,16 @@ def _imageio() -> tuple[ctypes.CDLL, ctypes.CDLL]:
         cf.CFDataGetBytePtr.restype = _ptr
         cf.CFStringCreateWithCString.argtypes = (_ptr, ctypes.c_char_p, ctypes.c_uint32)
         cf.CFStringCreateWithCString.restype = _ptr
+        cf.CFDictionaryCreate.argtypes = (_ptr, _ptr, _ptr, ctypes.c_long, _ptr, _ptr)
+        cf.CFDictionaryCreate.restype = _ptr
         cf.CFRelease.argtypes = (_ptr,)
         cf.CFRelease.restype = None
         iio.CGImageSourceCreateWithData.argtypes = (_ptr, _ptr)
         iio.CGImageSourceCreateWithData.restype = _ptr
         iio.CGImageSourceCreateImageAtIndex.argtypes = (_ptr, ctypes.c_ulong, _ptr)
         iio.CGImageSourceCreateImageAtIndex.restype = _ptr
+        iio.CGImageSourceCreateThumbnailAtIndex.argtypes = (_ptr, ctypes.c_ulong, _ptr)
+        iio.CGImageSourceCreateThumbnailAtIndex.restype = _ptr
         iio.CGImageDestinationCreateWithData.argtypes = (_ptr, _ptr, ctypes.c_ulong, _ptr)
         iio.CGImageDestinationCreateWithData.restype = _ptr
         iio.CGImageDestinationAddImage.argtypes = (_ptr, _ptr, _ptr)
@@ -160,6 +164,24 @@ def _imageio() -> tuple[ctypes.CDLL, ctypes.CDLL]:
     return cf, iio
 
 
+def _thumbnail_options(cf: Any, iio: Any) -> Any:
+    """Options dict instructing ImageIO to decode full pixels with EXIF orientation applied."""
+    create_dict = getattr(cf, "CFDictionaryCreate", None)
+    if create_dict is None or not hasattr(iio, "CGImageSourceCreateThumbnailAtIndex"):
+        return None
+    try:
+        true_val = _ptr.in_dll(cf, "kCFBooleanTrue").value
+        always_key = _ptr.in_dll(iio, "kCGImageSourceCreateThumbnailFromImageAlways").value
+        transform_key = _ptr.in_dll(iio, "kCGImageSourceCreateThumbnailWithTransform").value
+        key_cb = ctypes.addressof(_ptr.in_dll(cf, "kCFTypeDictionaryKeyCallBacks"))
+        val_cb = ctypes.addressof(_ptr.in_dll(cf, "kCFTypeDictionaryValueCallBacks"))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    keys = (_ptr * 2)(always_key, transform_key)
+    vals = (_ptr * 2)(true_val, true_val)
+    return create_dict(None, ctypes.cast(keys, _ptr), ctypes.cast(vals, _ptr), 2, key_cb, val_cb)
+
+
 def _convert_to_png(raw: bytes, *, limit: int = MAX_IMAGE_BYTES) -> bytes:
     """Convert a non-PNG/JPEG raster image (TIFF, HEIC, GIF, etc.) to PNG via ImageIO."""
     if not raw:
@@ -167,7 +189,7 @@ def _convert_to_png(raw: bytes, *, limit: int = MAX_IMAGE_BYTES) -> bytes:
     if len(raw) > limit:
         raise ImageError(f"the clipboard image is larger than {limit} bytes")
     cf, iio = _imageio()
-    src_data = src = image = dst_data = uti = dst = None
+    src_data = src = opts = image = dst_data = uti = dst = None
     try:
         src_data = cf.CFDataCreate(None, raw, len(raw))
         if not src_data:
@@ -175,7 +197,11 @@ def _convert_to_png(raw: bytes, *, limit: int = MAX_IMAGE_BYTES) -> bytes:
         src = iio.CGImageSourceCreateWithData(src_data, None)
         if not src:
             raise ImageError("malformed or unsupported image")
-        image = iio.CGImageSourceCreateImageAtIndex(src, 0, None)
+        opts = _thumbnail_options(cf, iio)
+        if opts:
+            image = iio.CGImageSourceCreateThumbnailAtIndex(src, 0, opts)
+        if not image:
+            image = iio.CGImageSourceCreateImageAtIndex(src, 0, None)
         if not image:
             raise ImageError("malformed or unsupported image")
         dst_data = cf.CFDataCreateMutable(None, 0)
@@ -198,7 +224,7 @@ def _convert_to_png(raw: bytes, *, limit: int = MAX_IMAGE_BYTES) -> bytes:
             raise ImageError("could not read converted PNG")
         return ctypes.string_at(ptr, length)
     finally:
-        for obj in (dst, uti, dst_data, image, src, src_data):
+        for obj in (dst, uti, dst_data, image, opts, src, src_data):
             if obj:
                 cf.CFRelease(obj)
 

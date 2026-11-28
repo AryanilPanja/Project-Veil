@@ -149,7 +149,7 @@ def notification(outcome: Outcome) -> Message:
         suffix = {
             None: "Ready to paste.",
             Pasted.PASTED: "Pasted.",
-        }.get(outcome.pasted, "Not pasted: press Ctrl+V yourself.")
+        }.get(outcome.pasted, f"Not pasted: press {key} yourself.")
         if outcome.image_removed:
             return Message(
                 "veil: image sanitized",
